@@ -20,7 +20,7 @@ body {
 
 .chat-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   gap: 18px;
   max-width: 980px;
   height: 100vh;
@@ -33,7 +33,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  padding: 16px 0;
+  padding: 16px 0 6px;
 }
 
 .brand-row,
@@ -70,7 +70,8 @@ h1 {
 }
 
 .secure-badge,
-.icon-button {
+.icon-button,
+.chat-tab {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -90,6 +91,32 @@ h1 {
   width: 42px;
   color: #18181b;
   padding: 0;
+}
+
+.chat-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.chat-tab {
+  flex: 0 0 auto;
+  max-width: 220px;
+  min-height: 36px;
+  padding: 0 12px;
+  color: #18181b;
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-tab.active {
+  color: #ffffff;
+  background: #111827;
+  border-color: #111827;
 }
 
 .messages {
