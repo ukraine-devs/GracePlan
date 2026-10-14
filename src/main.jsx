@@ -28,13 +28,17 @@ function App() {
     setIsSending(true);
 
     try {
-      const form = new FormData();
-      form.append("messages", JSON.stringify(nextMessages));
-      for (const file of files) form.append("files", file);
-
       const response = await fetch("/api/chat", {
         method: "POST",
-        body: form,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: nextMessages,
+          files: files.map((file) => ({
+            name: file.name,
+            type: file.type,
+            size: file.size,
+          })),
+        }),
       });
 
       const data = await response.json();
