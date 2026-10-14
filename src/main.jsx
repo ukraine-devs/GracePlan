@@ -1,85 +1,111 @@
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ExternalLink, FileUp, LockKeyhole, MessageSquareText, ShieldCheck } from "lucide-react";
+import { Send, ShieldCheck } from "lucide-react";
 import "./styles.css";
 
-const DEFAULT_GRACE_PLAN_URL = "https://chatgpt.com/plugins/plugins_6ace24a6236c81918643c1d355f8ef4a";
+const welcome = {
+  role: "assistant",
+  content:
+    "Я Grace Planner. Загружайте планы и фото через форму сайта, а здесь пишите задачу по проекту безопасности, BIM-разрезам, CCTV, Wi-Fi, NAS/NVR и сметам.",
+};
 
 function App() {
-  const [prompt, setPrompt] = useState("Создай комплект 6 A2 с BIM-разрезами, схемами CCTV/Wi-Fi/NAS/NVR и сметами по всем загруженным планам и фото.");
-  const gracePlanUrl = import.meta.env.VITE_GRACE_PLAN_URL || DEFAULT_GRACE_PLAN_URL;
+  const [messages, setMessages] = useState([welcome]);
+  const [input, setInput] = useState("");
+  const [files, setFiles] = useState([]);
+  const [isSending, setIsSending] = useState(false);
+  const [error, setError] = useState("");
 
-  const launchUrl = useMemo(() => {
-    const url = new URL(gracePlanUrl);
-    if (prompt.trim()) {
-      url.searchParams.set("q", prompt.trim());
+  async function submit(event) {
+    event.preventDefault();
+    const text = input.trim();
+    if (!text || isSending) return;
+
+    const nextMessages = [...messages, { role: "user", content: text }];
+    setMessages(nextMessages);
+    setInput("");
+    setError("");
+    setIsSending(true);
+
+    try {
+      const form = new FormData();
+      form.append("messages", JSON.stringify(nextMessages));
+      for (const file of files) form.append("files", file);
+
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        body: form,
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Ошибка API");
+      setMessages([...nextMessages, { role: "assistant", content: data.answer }]);
+    } catch (err) {
+      setError(err.message);
+      setMessages(messages);
+    } finally {
+      setIsSending(false);
     }
-    return url.toString();
-  }, [gracePlanUrl, prompt]);
-
-  const openGracePlan = () => {
-    window.open(launchUrl, "_blank", "noopener,noreferrer");
-  };
+  }
 
   return (
     <main className="app-shell">
-      <section className="chat-panel" aria-label="Grace Planner chat launcher">
-        <div className="brand-row">
-          <div className="brand-mark">GP</div>
-          <div>
-            <h1>Grace Planner</h1>
-            <p>Запуск только вашего Grace Plan в авторизованном ChatGPT.</p>
+      <section className="chat-panel" aria-label="Grace Planner chat">
+        <header className="topbar">
+          <div className="brand-row">
+            <div className="brand-mark">GP</div>
+            <div>
+              <h1>Grace Planner</h1>
+              <p>Чат работает через API. Пользователю не нужен аккаунт ChatGPT.</p>
+            </div>
           </div>
-        </div>
-
-        <div className="status-grid">
-          <div>
-            <LockKeyhole size={18} />
-            <span>Вход остается на chatgpt.com</span>
-          </div>
-          <div>
+          <div className="secure-badge">
             <ShieldCheck size={18} />
-            <span>Токены и пароль не вводятся на сайте</span>
+            <span>OpenAI API</span>
           </div>
-          <div>
-            <MessageSquareText size={18} />
-            <span>Открывается только Grace Plan</span>
-          </div>
+        </header>
+
+        <div className="messages" aria-live="polite">
+          {messages.map((message, index) => (
+            <article className={`message ${message.role}`} key={`${message.role}-${index}`}>
+              <span>{message.role === "user" ? "Вы" : "Grace Plan"}</span>
+              <p>{message.content}</p>
+            </article>
+          ))}
+          {isSending && (
+            <article className="message assistant">
+              <span>Grace Plan</span>
+              <p>Думаю...</p>
+            </article>
+          )}
         </div>
 
-        <label className="prompt-box">
-          <span>Стартовая команда</span>
-          <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            rows={6}
-          />
-        </label>
+        {error && <div className="error">{error}</div>}
 
-        <div className="actions">
-          <button type="button" onClick={openGracePlan}>
-            Открыть Grace Plan
-            <ExternalLink size={18} />
+        <form className="composer" onSubmit={submit}>
+          <label className="file-row">
+            <span>Файлы проекта</span>
+            <input
+              type="file"
+              multiple
+              onChange={(event) => setFiles(Array.from(event.target.files || []))}
+            />
+          </label>
+          <label className="prompt-box">
+            <span>Сообщение</span>
+            <textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="Например: создай комплект 6 A2 по всем планам и фото..."
+              rows={4}
+            />
+          </label>
+          <button type="submit" disabled={isSending || !input.trim()}>
+            Отправить
+            <Send size={18} />
           </button>
-          <a href={gracePlanUrl} target="_blank" rel="noreferrer">
-            Проверить доступ
-          </a>
-        </div>
+        </form>
       </section>
-
-      <aside className="info-panel" aria-label="Project files">
-        <h2>Рабочий поток</h2>
-        <ul>
-          <li><FileUp size={16} />Загрузите планы и фотографии в открывшийся чат Grace Plan.</li>
-          <li><FileUp size={16} />Вставьте команду из поля слева или измените ее перед запуском.</li>
-          <li><FileUp size={16} />Получайте PDF, ZIP и проектные материалы внутри ChatGPT.</li>
-        </ul>
-        <p>
-          Из-за защиты ChatGPT полноценный чат нельзя встроить в iframe как чужую авторизованную сессию.
-          Этот сайт делает правильный безопасный вариант: открывает ваш Grace Plan в аккаунте,
-          где пользователь уже вошел.
-        </p>
-      </aside>
     </main>
   );
 }
