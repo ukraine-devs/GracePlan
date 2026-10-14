@@ -8,28 +8,28 @@ export const config = {
   runtime: "nodejs",
 };
 
-async function readForm(req) {
-  const form = await req.formData();
-  const messages = JSON.parse(form.get("messages") || "[]");
-  const files = form.getAll("files").filter((file) => file && file.name);
+async function readJson(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const body = Buffer.concat(chunks).toString("utf8");
+  const payload = body ? JSON.parse(body) : {};
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const files = Array.isArray(payload.files) ? payload.files : [];
   const fileNotes = files.map((file) => `Файл: ${file.name}, тип: ${file.type || "unknown"}, размер: ${file.size} bytes`);
   return { messages, fileNotes };
 }
 
-export default async function handler(req) {
+export default async function handler(req, res) {
   if (req.method !== "POST") {
-    return Response.json({ error: "Method not allowed" }, { status: 405 });
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   if (!process.env.OPENAI_API_KEY) {
-    return Response.json(
-      { error: "На Vercel нужно добавить OPENAI_API_KEY в Environment Variables." },
-      { status: 500 },
-    );
+    return res.status(500).json({ error: "На Vercel нужно добавить OPENAI_API_KEY в Environment Variables." });
   }
 
   try {
-    const { messages, fileNotes } = await readForm(req);
+    const { messages, fileNotes } = await readJson(req);
     const input = [
       { role: "system", content: GRACE_PLAN_SYSTEM },
       ...(fileNotes.length
@@ -55,11 +55,11 @@ export default async function handler(req) {
 
     const data = await upstream.json();
     if (!upstream.ok) {
-      return Response.json({ error: data.error?.message || "OpenAI API error" }, { status: upstream.status });
+      return res.status(upstream.status).json({ error: data.error?.message || "OpenAI API error" });
     }
 
-    return Response.json({ answer: data.output_text || "Пустой ответ API." });
+    return res.status(200).json({ answer: data.output_text || "Пустой ответ API." });
   } catch (error) {
-    return Response.json({ error: error.message || "Server error" }, { status: 500 });
+    return res.status(500).json({ error: error.message || "Server error" });
   }
 }
