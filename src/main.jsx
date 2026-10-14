@@ -119,7 +119,17 @@ function App() {
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "API error");
-      const finalMessages = [...nextMessages, { role: "assistant", content: data.answer }];
+
+      // Небольшая задержка показывает команду, но не рассуждения.
+      await new Promise((resolve) => window.setTimeout(resolve, 650));
+
+      const previousAssistant = [...nextMessages].reverse().find((message) => message.role === "assistant");
+      const answer = data.answer?.trim();
+      const finalAnswer =
+        answer && answer !== previousAssistant?.content?.trim()
+          ? answer
+          : "Команда уже показана. Ожидаю новые данные.";
+      const finalMessages = [...nextMessages, { role: "assistant", content: finalAnswer }];
       updateActiveChat((chat) => ({ ...chat, messages: finalMessages }));
     } catch (err) {
       setError(err.message);
@@ -172,7 +182,7 @@ function App() {
           {isSending && (
             <article className="message assistant">
               <span>Grace Plan</span>
-              <p>Thinking...</p>
+              <p>Виконується команда…</p>
             </article>
           )}
         </div>
