@@ -1,19 +1,40 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Send, ShieldCheck } from "lucide-react";
+import { Send, ShieldCheck, Trash2 } from "lucide-react";
 import "./styles.css";
+
+const STORAGE_KEY = "grace-plan-chat-history";
 
 const welcome = {
   role: "assistant",
   content: "Нужны фото 2D плана и +-5 фото минимум.",
 };
 
+function loadMessages() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    return Array.isArray(saved) && saved.length ? saved : [welcome];
+  } catch {
+    return [welcome];
+  }
+}
+
 function App() {
-  const [messages, setMessages] = useState([welcome]);
+  const [messages, setMessages] = useState(loadMessages);
   const [input, setInput] = useState("");
   const [files, setFiles] = useState([]);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+  }, [messages]);
+
+  function clearChat() {
+    setMessages([welcome]);
+    setError("");
+    localStorage.removeItem(STORAGE_KEY);
+  }
 
   async function submit(event) {
     event.preventDefault();
@@ -62,9 +83,14 @@ function App() {
               <p>Grace AI</p>
             </div>
           </div>
-          <div className="secure-badge">
-            <ShieldCheck size={18} />
-            <span>(OpenAI API) + (GPT Мгновенный)</span>
+          <div className="header-actions">
+            <button className="icon-button" type="button" onClick={clearChat} aria-label="Clear chat">
+              <Trash2 size={18} />
+            </button>
+            <div className="secure-badge">
+              <ShieldCheck size={18} />
+              <span>(OpenAI API) + (GPT Мгновенный)</span>
+            </div>
           </div>
         </header>
 
