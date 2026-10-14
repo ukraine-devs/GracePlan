@@ -9,12 +9,15 @@ const progressSteps = ["Загрузка файлов", "Проверка 2D-п�
 const welcome = { role: "assistant", content: "Нужны фото 2D плана и +-5 фото минимум." };
 
 function createChat() { return { id: crypto.randomUUID(), title: "New chat", messages: [welcome], createdAt: Date.now() }; }
+function normalizeMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).filter((message) => message.content !== "Команда уже показана. Ожидаю новые данные.");
+}
 function loadChats() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    if (Array.isArray(saved) && saved.length) return saved;
+    if (Array.isArray(saved) && saved.length) return saved.map((chat) => ({ ...chat, messages: normalizeMessages(chat.messages) }));
     const oldMessages = JSON.parse(localStorage.getItem("grace-plan-chat-history") || "null");
-    if (Array.isArray(oldMessages) && oldMessages.length) return [{ ...createChat(), title: "Saved chat", messages: oldMessages }];
+    if (Array.isArray(oldMessages) && oldMessages.length) return [{ ...createChat(), title: "Saved chat", messages: normalizeMessages(oldMessages) }];
   } catch { return [createChat()]; }
   return [createChat()];
 }
