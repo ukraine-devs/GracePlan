@@ -30,7 +30,7 @@ export default async function handler(req, res) {
 
   try {
     const { messages, fileNotes } = await readJson(req);
-    const input = [
+    const chatMessages = [
       { role: "system", content: GRACE_PLAN_SYSTEM },
       ...(fileNotes.length
         ? [{ role: "user", content: `Пользователь приложил файлы:\n${fileNotes.join("\n")}` }]
@@ -41,15 +41,16 @@ export default async function handler(req, res) {
       })),
     ];
 
-    const upstream = await fetch("https://api.openai.com/v1/responses", {
+    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
-        input,
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        messages: chatMessages,
+        temperature: 0.2,
       }),
     });
 
@@ -58,7 +59,8 @@ export default async function handler(req, res) {
       return res.status(upstream.status).json({ error: data.error?.message || "OpenAI API error" });
     }
 
-    return res.status(200).json({ answer: data.output_text || "Пустой ответ API." });
+    const answer = data.choices?.[0]?.message?.content?.trim();
+    return res.status(200).json({ answer: answer || "Пустой ответ API." });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Server error" });
   }
