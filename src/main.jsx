@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Plus, Send, ShieldCheck, Trash2 } from "lucide-react";
+import { Plus, Send, Trash2 } from "lucide-react";
 import "./styles.css";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
@@ -46,6 +46,7 @@ function App() {
   const [files, setFiles] = useState([]);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState("");
+  const [showStatus, setShowStatus] = useState(true);
 
   const activeChat = useMemo(
     () => chats.find((chat) => chat.id === activeChatId) || chats[0],
@@ -64,6 +65,11 @@ function App() {
   useEffect(() => {
     if (activeChat?.id) localStorage.setItem(ACTIVE_KEY, activeChat.id);
   }, [activeChat?.id]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShowStatus(false), 5500);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   function updateActiveChat(updater) {
     setChats((current) => current.map((chat) => (chat.id === activeChat.id ? updater(chat) : chat)));
@@ -128,10 +134,9 @@ function App() {
       <section className="chat-panel" aria-label="Grace Planner chat">
         <header className="topbar">
           <div className="brand-row">
-            <div className="brand-mark">GP</div>
-            <div>
-              <h1>Grace Planner</h1>
-              <p>Grace AI</p>
+            <div className="brand-text" aria-label="Grace AI">
+              <span>Grace</span>
+              <span>AI</span>
             </div>
           </div>
           <div className="header-actions">
@@ -141,10 +146,6 @@ function App() {
             <button className="icon-button" type="button" onClick={clearChat} aria-label="Clear chat" title="Clear chat">
               <Trash2 size={18} />
             </button>
-            <div className="secure-badge">
-              <ShieldCheck size={18} />
-              <span>(OpenAI API) + (GPT Мгновенный)</span>
-            </div>
           </div>
         </header>
 
@@ -175,6 +176,14 @@ function App() {
             </article>
           )}
         </div>
+
+        {showStatus && (
+          <div className="status-badges" aria-label="Connection">
+            <span className="status-badge">OpenAI API</span>
+            <span className="status-plus">+</span>
+            <span className="status-badge">GPT Мгновенный</span>
+          </div>
+        )}
 
         {error && <div className="error">{error}</div>}
 
