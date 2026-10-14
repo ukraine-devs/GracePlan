@@ -60,12 +60,12 @@ function App() {
             <div className="brand-mark">GP</div>
             <div>
               <h1>Grace Planner</h1>
-              <p>Grace Plan PDF agent</p>
+              <p>Grace AI</p>
             </div>
           </div>
           <div className="secure-badge">
             <ShieldCheck size={18} />
-            <span>GPT Мгновенный</span>
+            <span>(OpenAI API) + (GPT Мгновенный)</span>
           </div>
         </header>
 
