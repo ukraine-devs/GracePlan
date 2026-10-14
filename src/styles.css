@@ -14,187 +14,188 @@ body {
 }
 
 .app-shell {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
   min-height: 100vh;
+  background: #f7f7f8;
 }
 
 .chat-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 18px;
+  max-width: 980px;
+  height: 100vh;
+  margin: 0 auto;
+  padding: 22px;
+}
+
+.topbar {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 28px;
-  padding: 48px clamp(24px, 7vw, 96px);
-  background: #ffffff;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 0;
 }
 
 .brand-row {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
 }
 
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 58px;
-  height: 58px;
+  width: 52px;
+  height: 52px;
   border-radius: 8px;
   background: #111827;
   color: #ffffff;
   font-weight: 800;
-  letter-spacing: 0;
 }
 
 h1,
-h2,
 p {
   margin: 0;
 }
 
 h1 {
-  font-size: clamp(34px, 6vw, 72px);
-  line-height: 0.98;
-  letter-spacing: 0;
+  font-size: 30px;
+  line-height: 1;
 }
 
-h2 {
-  font-size: 24px;
-}
-
-.brand-row p,
-.info-panel p {
-  margin-top: 8px;
+.brand-row p {
+  margin-top: 5px;
   color: #52525b;
-  line-height: 1.6;
 }
 
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.status-grid div {
-  display: flex;
+.secure-badge {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  min-height: 56px;
-  padding: 14px;
-  border: 1px solid #e4e4e7;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid #d4d4d8;
   border-radius: 8px;
-  color: #3f3f46;
-}
-
-.prompt-box {
-  display: grid;
-  gap: 10px;
+  background: #ffffff;
   font-weight: 700;
 }
 
+.messages {
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 6px 2px;
+}
+
+.message {
+  max-width: 82%;
+  padding: 14px 16px;
+  border-radius: 8px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.message span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.message.assistant {
+  align-self: flex-start;
+  background: #ffffff;
+  border: 1px solid #e4e4e7;
+}
+
+.message.user {
+  align-self: flex-end;
+  color: #ffffff;
+  background: #111827;
+}
+
+.error {
+  padding: 12px 14px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  color: #991b1b;
+  background: #fef2f2;
+}
+
+.composer {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.file-row,
+.prompt-box {
+  display: grid;
+  gap: 8px;
+  font-weight: 800;
+}
+
+input[type="file"],
 textarea {
   width: 100%;
-  resize: vertical;
-  min-height: 150px;
   border: 1px solid #d4d4d8;
   border-radius: 8px;
-  padding: 16px;
+  padding: 12px;
   color: #18181b;
   font: inherit;
-  line-height: 1.5;
   outline: none;
 }
 
-textarea:focus {
+textarea {
+  resize: vertical;
+  min-height: 110px;
+  line-height: 1.5;
+}
+
+textarea:focus,
+input[type="file"]:focus {
   border-color: #111827;
   box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.12);
 }
 
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 14px;
-}
-
-button,
-.actions a {
+button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
   min-height: 48px;
+  border: 0;
   border-radius: 8px;
   padding: 0 18px;
-  font: inherit;
-  font-weight: 800;
-  text-decoration: none;
-}
-
-button {
-  border: 0;
   color: #ffffff;
   background: #111827;
+  font: inherit;
+  font-weight: 800;
   cursor: pointer;
 }
 
-.actions a {
-  color: #111827;
-  border: 1px solid #d4d4d8;
+button:disabled {
+  cursor: not-allowed;
+  background: #a1a1aa;
 }
 
-.info-panel {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 22px;
-  padding: 40px;
-  background: #f1f5f9;
-  border-left: 1px solid #e2e8f0;
-}
-
-ul {
-  display: grid;
-  gap: 12px;
-  padding: 0;
-  margin: 0;
-  list-style: none;
-}
-
-li {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  color: #334155;
-  line-height: 1.5;
-}
-
-li svg {
-  flex: 0 0 auto;
-  margin-top: 3px;
-}
-
-@media (max-width: 820px) {
-  .app-shell {
-    grid-template-columns: 1fr;
-  }
-
+@media (max-width: 700px) {
   .chat-panel {
-    min-height: auto;
-    padding: 28px 18px;
+    height: auto;
+    min-height: 100vh;
+    padding: 16px;
   }
 
-  .brand-row {
+  .topbar {
     align-items: flex-start;
+    flex-direction: column;
   }
 
-  .status-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .info-panel {
-    border-left: 0;
-    border-top: 1px solid #e2e8f0;
-    padding: 28px 18px;
+  .message {
+    max-width: 100%;
   }
 }
