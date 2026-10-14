@@ -66,7 +66,11 @@ function App() {
       await new Promise((resolve) => window.setTimeout(resolve, 650));
       const previousAssistant = [...nextMessages].reverse().find((message) => message.role === "assistant");
       const answer = data.answer?.trim();
-      const finalAnswer = answer && answer !== previousAssistant?.content?.trim() ? answer : "Команда уже показана. Ожидаю новые данные.";
+      const finalAnswer = answer && answer !== previousAssistant?.content?.trim()
+        ? answer
+        : files.length
+          ? "Команда обработана. Проверьте результат и следующий этап."
+          : "Для выполнения нужны 2D-план и минимум 5 фотографий.";
       updateActiveChat((chat) => ({ ...chat, messages: [...nextMessages, { role: "assistant", content: finalAnswer }] }));
       setFiles([]);
     } catch (err) {
