@@ -5,8 +5,7 @@ import "./styles.css";
 
 const welcome = {
   role: "assistant",
-  content:
-    "Я Grace Planner. Працюю тільки у форматі Grace Plan: PDF як у прикладі, за останнім набором команд, українською або англійською.",
+  content: "Нужны фото 2D плана и +-5 фото минимум.",
 };
 
 function App() {
