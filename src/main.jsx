@@ -5,6 +5,7 @@ import "./styles.css";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
 const ACTIVE_KEY = "grace-plan-active-chat";
+const progressSteps = ["Загрузка файлов", "Проверка 2D-плана", "Сопоставление фото", "Построение 3D-плана", "Формирование Grace Plan"];
 const welcome = { role: "assistant", content: "Нужны фото 2D плана и +-5 фото минимум." };
 
 function createChat() { return { id: crypto.randomUUID(), title: "New chat", messages: [welcome], createdAt: Date.now() }; }
@@ -33,6 +34,7 @@ function App() {
   const [input, setInput] = useState("");
   const [files, setFiles] = useState([]);
   const [isSending, setIsSending] = useState(false);
+  const [currentStep, setCurrentStep] = useState(-1);
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) || chats[0], [activeChatId, chats]);
@@ -52,7 +54,8 @@ function App() {
     if ((!text && !files.length) || isSending) return;
     const nextMessages = [...messages, { role: "user", content: text || "Проаналізуйте прикріплені файли." }];
     updateActiveChat((chat) => ({ ...chat, title: chat.messages.length === 1 ? makeTitle(text || files[0].name) : chat.title, messages: nextMessages }));
-    setInput(""); setError(""); setIsSending(true);
+    setInput(""); setError(""); setIsSending(true); setCurrentStep(0);
+    const timer = window.setInterval(() => setCurrentStep((step) => Math.min(step + 1, progressSteps.length - 1)), 1200);
     try {
       const filePayload = await Promise.all(files.map(readFile));
       const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextMessages, files: filePayload }) });
@@ -69,7 +72,9 @@ function App() {
     } catch (err) {
       setError(err.message);
       updateActiveChat((chat) => ({ ...chat, messages }));
-    } finally { setIsSending(false); }
+    } finally {
+      window.clearInterval(timer); setCurrentStep(-1); setIsSending(false);
+    }
   }
 
   return (
@@ -78,7 +83,10 @@ function App() {
         <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><button className="icon-button" type="button" onClick={clearChat} aria-label="Clear chat" title="Clear chat"><Trash2 size={18} /></button></div>
       </header>
       <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
-      <div className="messages" aria-live="polite">{messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p></article>)}{isSending && <article className="message assistant"><span>Grace Plan</span><p>Виконується команда…</p></article>}</div>
+      <div className="messages" aria-live="polite">
+        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p></article>)}
+        {isSending && <article className="message assistant progress-message"><span>Grace Plan</span>{progressSteps.map((step, index) => <p key={step} className={index < currentStep ? "progress-done" : index === currentStep ? "progress-current" : "progress-pending"}>{index < currentStep ? "✓ " : index === currentStep ? "▸ " : "○ "}{step}{index === currentStep ? "…" : ""}</p>)}</article>}
+      </div>
       {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">OpenAI API</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
       {error && <div className="error">{error}</div>}
       <form className="composer" onSubmit={submit}><label className="file-row"><span>Project files</span><input type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files || []))} /></label><label className="prompt-box"><span>Message</span><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="Example: create the Grace Plan PDF package from all plans and photos..." rows={4} /></label><button type="submit" disabled={isSending || (!input.trim() && !files.length)}>Send<Send size={18} /></button></form>
