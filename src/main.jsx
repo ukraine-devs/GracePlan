@@ -6,7 +6,7 @@ import "./styles.css";
 const welcome = {
   role: "assistant",
   content:
-    "Я Grace Planner. Загружайте планы и фото через форму сайта, а здесь пишите задачу по проекту безопасности, BIM-разрезам, CCTV, Wi-Fi, NAS/NVR и сметам.",
+    "Я Grace Planner. Працюю тільки у форматі Grace Plan: PDF як у прикладі, за останнім набором команд, українською або англійською.",
 };
 
 function App() {
@@ -42,7 +42,7 @@ function App() {
       });
 
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Ошибка API");
+      if (!response.ok) throw new Error(data.error || "API error");
       setMessages([...nextMessages, { role: "assistant", content: data.answer }]);
     } catch (err) {
       setError(err.message);
@@ -60,26 +60,26 @@ function App() {
             <div className="brand-mark">GP</div>
             <div>
               <h1>Grace Planner</h1>
-              <p>Чат работает через API. Пользователю не нужен аккаунт ChatGPT.</p>
+              <p>Grace Plan PDF agent</p>
             </div>
           </div>
           <div className="secure-badge">
             <ShieldCheck size={18} />
-            <span>OpenAI API</span>
+            <span>GPT Мгновенный</span>
           </div>
         </header>
 
         <div className="messages" aria-live="polite">
           {messages.map((message, index) => (
             <article className={`message ${message.role}`} key={`${message.role}-${index}`}>
-              <span>{message.role === "user" ? "Вы" : "Grace Plan"}</span>
+              <span>{message.role === "user" ? "Ви" : "Grace Plan"}</span>
               <p>{message.content}</p>
             </article>
           ))}
           {isSending && (
             <article className="message assistant">
               <span>Grace Plan</span>
-              <p>Думаю...</p>
+              <p>Thinking...</p>
             </article>
           )}
         </div>
@@ -88,7 +88,7 @@ function App() {
 
         <form className="composer" onSubmit={submit}>
           <label className="file-row">
-            <span>Файлы проекта</span>
+            <span>Project files</span>
             <input
               type="file"
               multiple
@@ -96,16 +96,16 @@ function App() {
             />
           </label>
           <label className="prompt-box">
-            <span>Сообщение</span>
+            <span>Message</span>
             <textarea
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              placeholder="Например: создай комплект 6 A2 по всем планам и фото..."
+              placeholder="Example: create the Grace Plan PDF package from all plans and photos..."
               rows={4}
             />
           </label>
           <button type="submit" disabled={isSending || !input.trim()}>
-            Отправить
+            Send
             <Send size={18} />
           </button>
         </form>
