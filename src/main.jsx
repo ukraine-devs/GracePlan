@@ -1,39 +1,85 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Send, ShieldCheck, Trash2 } from "lucide-react";
+import { Plus, Send, ShieldCheck, Trash2 } from "lucide-react";
 import "./styles.css";
 
-const STORAGE_KEY = "grace-plan-chat-history";
+const STORAGE_KEY = "grace-plan-chat-sessions";
+const ACTIVE_KEY = "grace-plan-active-chat";
 
 const welcome = {
   role: "assistant",
   content: "Нужны фото 2D плана и +-5 фото минимум.",
 };
 
-function loadMessages() {
+function createChat() {
+  return {
+    id: crypto.randomUUID(),
+    title: "New chat",
+    messages: [welcome],
+    createdAt: Date.now(),
+  };
+}
+
+function loadChats() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    return Array.isArray(saved) && saved.length ? saved : [welcome];
+    if (Array.isArray(saved) && saved.length) return saved;
+
+    const oldMessages = JSON.parse(localStorage.getItem("grace-plan-chat-history") || "null");
+    if (Array.isArray(oldMessages) && oldMessages.length) {
+      return [{ ...createChat(), title: "Saved chat", messages: oldMessages }];
+    }
   } catch {
-    return [welcome];
+    return [createChat()];
   }
+  return [createChat()];
+}
+
+function makeTitle(text) {
+  return text.length > 28 ? `${text.slice(0, 28)}...` : text || "New chat";
 }
 
 function App() {
-  const [messages, setMessages] = useState(loadMessages);
+  const [chats, setChats] = useState(loadChats);
+  const [activeChatId, setActiveChatId] = useState(() => localStorage.getItem(ACTIVE_KEY) || null);
   const [input, setInput] = useState("");
   const [files, setFiles] = useState([]);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState("");
 
+  const activeChat = useMemo(
+    () => chats.find((chat) => chat.id === activeChatId) || chats[0],
+    [activeChatId, chats],
+  );
+  const messages = activeChat?.messages || [welcome];
+
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
-  }, [messages]);
+    if (!activeChatId && chats[0]) setActiveChatId(chats[0].id);
+  }, [activeChatId, chats]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
+  }, [chats]);
+
+  useEffect(() => {
+    if (activeChat?.id) localStorage.setItem(ACTIVE_KEY, activeChat.id);
+  }, [activeChat?.id]);
+
+  function updateActiveChat(updater) {
+    setChats((current) => current.map((chat) => (chat.id === activeChat.id ? updater(chat) : chat)));
+  }
+
+  function newChat() {
+    const chat = createChat();
+    setChats((current) => [chat, ...current]);
+    setActiveChatId(chat.id);
+    setInput("");
+    setError("");
+  }
 
   function clearChat() {
-    setMessages([welcome]);
+    updateActiveChat((chat) => ({ ...chat, title: "New chat", messages: [welcome] }));
     setError("");
-    localStorage.removeItem(STORAGE_KEY);
   }
 
   async function submit(event) {
@@ -42,7 +88,11 @@ function App() {
     if (!text || isSending) return;
 
     const nextMessages = [...messages, { role: "user", content: text }];
-    setMessages(nextMessages);
+    updateActiveChat((chat) => ({
+      ...chat,
+      title: chat.messages.length === 1 ? makeTitle(text) : chat.title,
+      messages: nextMessages,
+    }));
     setInput("");
     setError("");
     setIsSending(true);
@@ -63,10 +113,11 @@ function App() {
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "API error");
-      setMessages([...nextMessages, { role: "assistant", content: data.answer }]);
+      const finalMessages = [...nextMessages, { role: "assistant", content: data.answer }];
+      updateActiveChat((chat) => ({ ...chat, messages: finalMessages }));
     } catch (err) {
       setError(err.message);
-      setMessages(messages);
+      updateActiveChat((chat) => ({ ...chat, messages }));
     } finally {
       setIsSending(false);
     }
@@ -84,7 +135,10 @@ function App() {
             </div>
           </div>
           <div className="header-actions">
-            <button className="icon-button" type="button" onClick={clearChat} aria-label="Clear chat">
+            <button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat">
+              <Plus size={18} />
+            </button>
+            <button className="icon-button" type="button" onClick={clearChat} aria-label="Clear chat" title="Clear chat">
               <Trash2 size={18} />
             </button>
             <div className="secure-badge">
@@ -93,6 +147,19 @@ function App() {
             </div>
           </div>
         </header>
+
+        <nav className="chat-tabs" aria-label="Chats">
+          {chats.map((chat) => (
+            <button
+              className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"}
+              key={chat.id}
+              type="button"
+              onClick={() => setActiveChatId(chat.id)}
+            >
+              {chat.title}
+            </button>
+          ))}
+        </nav>
 
         <div className="messages" aria-live="polite">
           {messages.map((message, index) => (
