@@ -1,6 +1,6 @@
 # Grace Planner
 
-Static Vite site for opening the Grace Plan GPT/plugin from a logged-in ChatGPT account.
+API-backed Grace Plan chat for visitors without requiring a ChatGPT account.
 
 ## Local
 
@@ -17,12 +17,16 @@ The project builds with:
 npm run build
 ```
 
-Optional environment variable:
+Required environment variable:
 
 ```bash
-VITE_GRACE_PLAN_URL=https://chatgpt.com/plugins/plugins_6ace24a6236c81918643c1d355f8ef4a
+OPENAI_API_KEY=...
 ```
 
-ChatGPT cannot be safely embedded as an authenticated iframe on another domain. This site opens the Grace Plan page directly, so the existing ChatGPT login session is used by chatgpt.com.
+Optional model override:
 
-Deployment trigger: 2026-10-14 09:26 Europe/Kiev.
+```bash
+OPENAI_MODEL=gpt-4.1-mini
+```
+
+Deployment trigger: 2026-10-14 10:14 UTC.
