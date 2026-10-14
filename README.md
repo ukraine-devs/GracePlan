@@ -24,3 +24,5 @@ VITE_GRACE_PLAN_URL=https://chatgpt.com/plugins/plugins_6ace24a6236c81918643c1d3
 ```
 
 ChatGPT cannot be safely embedded as an authenticated iframe on another domain. This site opens the Grace Plan page directly, so the existing ChatGPT login session is used by chatgpt.com.
+
+Deployment trigger: 2026-10-14 09:26 Europe/Kiev.
