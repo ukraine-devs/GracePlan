@@ -5,7 +5,7 @@ import "./styles.css";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
 const ACTIVE_KEY = "grace-plan-active-chat";
-const progressSteps = ["Чтение файлов", "Обработка запроса на сервере"];
+const progressSteps = ["Анализ фото", "Сборка ответа"];
 const welcome = { role: "assistant", content: "Нужны фото 2D плана и +-5 фото минимум." };
 
 function createChat() { return { id: crypto.randomUUID(), title: "New chat", messages: [welcome], createdAt: Date.now() }; }
@@ -22,13 +22,25 @@ function loadChats() {
   return [createChat()];
 }
 function makeTitle(text) { return text.length > 28 ? `${text.slice(0, 28)}...` : text || "New chat"; }
-function readFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", size: file.size, data: reader.result });
-    reader.onerror = () => reject(new Error(`Не удалось прочитать файл: ${file.name}`));
-    reader.readAsDataURL(file);
-  });
+async function prepareImage(file) {
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) throw new Error("Поддерживаются только JPEG, PNG и WebP: " + file.name);
+  const originalBytes = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", originalBytes);
+  const originalSha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const bitmap = await createImageBitmap(file);
+  try {
+    const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const data = canvas.toDataURL("image/jpeg", 0.82);
+    if (data.length > 3_800_000) throw new Error("Снимок слишком большой после подготовки: " + file.name);
+    return { name: file.name, data, originalSha256 };
+  } finally { bitmap.close(); }
 }
 
 function App() {
@@ -38,6 +50,7 @@ function App() {
   const [files, setFiles] = useState([]);
   const [isSending, setIsSending] = useState(false);
   const [currentStep, setCurrentStep] = useState(-1);
+  const [photoProgress, setPhotoProgress] = useState("");
   const [executionOpen, setExecutionOpen] = useState(false);
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
@@ -56,15 +69,23 @@ function App() {
     event.preventDefault();
     const text = input.trim();
     if ((!text && !files.length) || isSending) return;
-    const bytes = files.reduce((sum, file) => sum + file.size, 0);
-    if (bytes > 3_000_000) { setError("Файлы превышают лимит текущего запроса (3 МБ). Нужна серверная загрузка для больших наборов."); return; }
     const nextMessages = [...messages, { role: "user", content: text || "Проаналізуйте прикріплені файли." }];
     updateActiveChat((chat) => ({ ...chat, title: chat.messages.length === 1 ? makeTitle(text || files[0].name) : chat.title, messages: nextMessages }));
-    setInput(""); setError(""); setIsSending(true); setCurrentStep(0); setExecutionOpen(false);
+    setInput(""); setError(""); setIsSending(true); setCurrentStep(files.length ? 0 : 1); setPhotoProgress(files.length ? `0/${files.length}` : ""); setExecutionOpen(false);
     try {
-      const filePayload = await Promise.all(files.map(readFile));
+      const photoObservations = [];
+      for (const file of files) {
+        const prepared = await prepareImage(file);
+        const analysisResponse = await fetch("/api/analyze-image", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(prepared)
+        });
+        const analysis = await analysisResponse.json();
+        if (!analysisResponse.ok) throw new Error(file.name + ": " + (analysis.error || "Анализ не удался"));
+        photoObservations.push(analysis);
+        setPhotoProgress(`${photoObservations.length}/${files.length}`);
+      }
       setCurrentStep(1);
-      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextMessages, files: filePayload }) });
+      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextMessages, files: [], photoObservations }) });
       const raw = await response.text();
       let data;
       try { data = raw ? JSON.parse(raw) : {}; } catch { throw new Error(raw || "Сервер вернул некорректный ответ."); }
@@ -99,7 +120,7 @@ function App() {
           <div className={`execution-spoiler ${executionOpen ? "open" : ""}`}>
             <button className="execution-summary" type="button" onClick={() => setExecutionOpen((open) => !open)} aria-expanded={executionOpen}>
               <i className="status-spinner" aria-hidden="true" />
-              <strong key={currentStep}>{progressSteps[currentStep] || "Выполнение команды"}<b className="typing-dots"><em>.</em><em>.</em><em>.</em></b></strong>
+              <strong key={currentStep}>{(progressSteps[currentStep] || "Выполнение команды") + (currentStep === 0 ? " " + photoProgress : "")}<b className="typing-dots"><em>.</em><em>.</em><em>.</em></b></strong>
               <ChevronDown className="spoiler-chevron" size={16} aria-hidden="true" />
             </button>
             <div className="execution-details" aria-hidden={!executionOpen}><div>
@@ -110,7 +131,7 @@ function App() {
       </div>
       {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">OpenAI API</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
       {error && <div className="error">{error}</div>}
-      <form className="composer" onSubmit={submit}><label className="file-row"><span>Project files</span><input type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files || []))} /></label><label className="prompt-box"><span>Message</span><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="Example: create the Grace Plan PDF package from all plans and photos..." rows={4} /></label><button type="submit" disabled={isSending || (!input.trim() && !files.length)}>Send<Send size={18} /></button></form>
+      <form className="composer" onSubmit={submit}><label className="file-row"><span>Project files</span><input type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(event) => setFiles(Array.from(event.target.files || []))} /></label><label className="prompt-box"><span>Message</span><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="Example: create the Grace Plan PDF package from all plans and photos..." rows={4} /></label><button type="submit" disabled={isSending || (!input.trim() && !files.length)}>Send<Send size={18} /></button></form>
     </section></main>
   );
 }
