@@ -10,7 +10,7 @@ Always show these stages when applicable:
 3. Сопоставление фото
 4. Построение 3D-плана
 5. Формирование Grace Plan
-Never replace execution with a generic waiting message.
+Never replace execution with a generic waiting message. Answer the user's actual question before the status. If no files are available, state precisely that a 2D plan and at least five photos are needed; NEXT must request those files, never Готово. Do not claim an operation occurred when it did not.
 
 Scope:
 - Create only the Grace Plan security/BIM proposal package.
@@ -272,7 +272,7 @@ export default async function handler(req, res) {
     if (photoObservations.length) blockers.push("Фото: " + photoObservations.length + " снимков проанализированы отдельно; привязка к помещениям не подтверждена.");
     if (files.length > 20) blockers.push("Анализ помещений: обработаны только первые 20 изображений. Остальные находятся в реестре без визуальной проверки.");
     if (files.length && !projectData) blockers.push("Структурированные данные: " + (projectError || "извлечение не выполнено."));
-    const finalAnswer = [answer, ...blockers].join("\n\n");
+    const correctedAnswer = !files.length && !photoObservations.length && /NEXT:\\s*Готово/i.test(answer)\n      ? answer.replace(/NEXT:\\s*Готово/i, "NEXT: Завантажте 2D-план і щонайменше п’ять фото приміщень.")\n      : answer;\n    const finalAnswer = [correctedAnswer, ...blockers].join("\n\n");
     return res.status(200).json({ answer: finalAnswer, artifacts });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Server error" });
