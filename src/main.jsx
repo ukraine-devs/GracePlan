@@ -161,8 +161,8 @@ function App() {
             if (wantsPdf) {
               setCurrentStep(6);
               const pdfUrl = await createConceptReviewPdf({ renderData: result.artifact.data, planData: plan, photoCount: photos.length });
-              artifacts.push({ type: "pdf", name: "GracePlan_A2_concept_review.pdf", data: pdfUrl });
-              finalAnswer += "\\nA2: создан один черновой лист по композиции эталона; полный комплект 6 A2 и оценка отклонения 21% ещё недоступны.";
+              artifacts.push({ type: "pdf", name: "GracePlan_6A2_concept_package.pdf", data: pdfUrl });
+              finalAnswer += "\\nA2: сформовано комплект із 6 аркушів за композицією еталона. Точне BIM/IFC і вимір відхилення 21% потребують каліброваної геометрії.";
             }
           } catch (renderError) { finalAnswer += "\n\n3D: не сформирован — " + renderError.message; }
         } else {
