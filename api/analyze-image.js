@@ -21,7 +21,6 @@ export default async function handler(req, res) {
       headers: { Authorization: "Bearer " + process.env.OPENAI_API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
-        temperature: 0,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: "Describe only visible evidence in this single architectural photograph or 2D plan. Answer JSON with keys kind, visible_rooms, surfaces, furniture, doors_windows_stairs, text_dimensions, uncertainty. Ukrainian or English. Do not claim a room ID, floor, scale or exact dimensions unless literally visible. Never infer hidden geometry." },
