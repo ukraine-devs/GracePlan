@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { ChevronDown, Plus, Send, Trash2 } from "lucide-react";
+import { ChevronDown, Menu, Pencil, Plus, Send, Trash2, X } from "lucide-react";
 import "./styles.css";
 import { createConceptReviewPdf } from "./exportDraft.js";
 import JSZip from "jszip";
@@ -117,7 +117,12 @@ function App() {
   const [isSending, setIsSending] = useState(false);
   const [currentStep, setCurrentStep] = useState(-1);
   const [photoProgress, setPhotoProgress] = useState("");
-  const [executionOpen, setExecutionOpen] = useState(false);
+  const [executionOpen, setExecutionOpen] = useState(true);
+  const [chatManagerOpen, setChatManagerOpen] = useState(false);
+  const [progressPreviews, setProgressPreviews] = useState([]);
+  const [previewModal, setPreviewModal] = useState(null);
+  const [previewComment, setPreviewComment] = useState("");
+  const [previewMarkers, setPreviewMarkers] = useState([]);
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -152,6 +157,37 @@ function App() {
   function updateActiveChat(updater) { setChats((current) => current.map((chat) => (chat.id === activeChat.id ? updater(chat) : chat))); }
   function newChat() { const chat = createChat(); setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]); }
   function clearChat() { updateActiveChat((chat) => ({ ...chat, title: "New chat", messages: [welcome] })); setError(""); }
+  function renameChat(chatId, title) {
+    setChats((current) => current.map((chat) => chat.id === chatId ? { ...chat, title: title.slice(0, 80) || "New chat" } : chat));
+  }
+  function deleteChat(chatId) {
+    setChats((current) => {
+      const remaining = current.filter((chat) => chat.id !== chatId);
+      if (remaining.length) {
+        if (activeChatId === chatId) setActiveChatId(remaining[0].id);
+        return remaining;
+      }
+      const replacement = createChat();
+      setActiveChatId(replacement.id);
+      return [replacement];
+    });
+  }
+  function openPreview(source, name = "Grace preview") {
+    setPreviewModal({ source, name });
+    setPreviewMarkers([]);
+    setPreviewComment("");
+  }
+  function markPreview(event) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const marker = { x: Math.round(((event.clientX - rect.left) / rect.width) * 100), y: Math.round(((event.clientY - rect.top) / rect.height) * 100) };
+    setPreviewMarkers((current) => [...current, marker]);
+  }
+  function applyPreviewComment() {
+    if (!previewComment.trim()) return;
+    const points = previewMarkers.map((point) => point.x + "%/" + point.y + "%").join(", ");
+    setInput((current) => [current, "Правка изображения «" + previewModal.name + "»" + (points ? " в точках " + points : "") + ": " + previewComment.trim()].filter(Boolean).join("\n"));
+    setPreviewModal(null);
+  }
 
   const handleFileChange = async (event) => {
     const selected = Array.from(event.target.files || []);
@@ -205,12 +241,13 @@ function App() {
     if ((!text && !files.length) || isSending) return;
     const nextMessages = [...messages, { role: "user", content: text || "Проаналізуйте прикріплені файли." }];
     updateActiveChat((chat) => ({ ...chat, title: chat.messages.length === 1 ? makeTitle(text || files[0].name) : chat.title, messages: nextMessages }));
-    setInput(""); setError(""); setIsSending(true); setCurrentStep(files.length ? 0 : 4); setPhotoProgress(files.length ? `0/${files.length}` : ""); setExecutionOpen(false);
+    setInput(""); setError(""); setIsSending(true); setCurrentStep(files.length ? 0 : 4); setPhotoProgress(files.length ? `0/${files.length}` : ""); setExecutionOpen(true); setProgressPreviews([]);
     try {
       const photoObservations = [];
       for (const file of files) {
         setCurrentStep(0);
         const prepared = await prepareImage(file);
+        setProgressPreviews((current) => [...current.slice(-3), { source: prepared.data, name: file.name }]);
         setCurrentStep(1);
         const analysisResponse = await fetch("/api/analyze-image", {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(prepared)
@@ -249,6 +286,8 @@ function App() {
             const plan = (await prepareImage(files[planIndexes[0]])).data;
             const photos = files.filter((_, index) => index !== planIndexes[0]);
             const contactSheets = await makeContactSheets(photos);
+            setProgressPreviews(contactSheets.map((source, index) => ({ source, name: "Contact sheet " + (index + 1) })));
+            contactSheets.forEach((source, index) => artifacts.push({ type: "image", name: "GracePlan_contact_sheet_" + (index + 1) + ".jpg", data: source }));
             const renderResponse = await fetch("/api/render-concept", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ plan, contactSheets, photoCount: photos.length })
@@ -256,6 +295,7 @@ function App() {
             const result = await renderResponse.json();
             if (!renderResponse.ok) throw new Error(result.error || "Render failed");
             artifacts.push(result.artifact);
+            setProgressPreviews([{ source: result.artifact.data, name: result.artifact.name }]);
             finalAnswer += "\\n\\n3D: концептуальный рендер готов; точная BIM-геометрия и связь всех комнат с фото не подтверждены.";
             if (wantsPdf) {
               setCurrentStep(6);
@@ -276,19 +316,20 @@ function App() {
       setError(err.message);
       updateActiveChat((chat) => ({ ...chat, messages }));
     } finally {
-      setCurrentStep(-1); setIsSending(false);
+      setCurrentStep(-1); setIsSending(false); setProgressPreviews([]);
     }
   }
 
   return (
     <main className="app-shell"><section className="chat-panel" aria-label="Grace Planner chat">
       <header className="topbar"><div className="brand-row"><div className="brand-text" aria-label="Grace AI Planner">Grace AI Planner</div></div>
+        <button className="icon-button chat-manager-button" type="button" onClick={() => setChatManagerOpen(true)} aria-label="Все чаты" title="Все чаты"><Menu size={18} /></button>
         <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
         <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><button className="icon-button" type="button" onClick={clearChat} aria-label="Clear chat" title="Clear chat"><Trash2 size={18} /></button></div>
       </header>
       <div className="messages" aria-live="polite">
-        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p>{message.execution?.length > 0 && <details className="command-log"><summary>Команди виконання</summary>{message.execution.map((item) => <div className={`command-row ${item.status}`} key={item.id}><strong>{item.id} · {item.label}</strong><span>{item.detail}</span></div>)}</details>}{message.artifacts?.map((artifact) => artifact.data ? <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}>{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл доступний лише до оновлення сторінки</span>)}</article>)}
-        {isSending && <article className="message assistant progress-message"><span>Grace Plan</span>
+        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace AI Planner"}</span><p>{message.content}</p>{message.execution?.length > 0 && <details className="command-log" open><summary>Команди виконання</summary>{message.execution.map((item) => <div className={`command-row ${item.status}`} key={item.id}><strong>{item.id} · {item.label}</strong><span>{item.detail}</span></div>)}</details>}{message.artifacts?.map((artifact) => artifact.data ? artifact.type === "image" ? <button className="preview-card" type="button" onClick={() => openPreview(artifact.data, artifact.name)} key={artifact.name}><img src={artifact.data} alt={artifact.name} /><span>{artifact.name}</span></button> : <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}>{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл недоступний</span>)}</article>)}
+        {isSending && <article className="message assistant progress-message"><span>Grace AI Planner</span>
           <div className={`execution-spoiler ${executionOpen ? "open" : ""}`}>
             <button className="execution-summary" type="button" onClick={() => setExecutionOpen((open) => !open)} aria-expanded={executionOpen}>
               <i className="status-spinner" aria-hidden="true" />
@@ -299,8 +340,11 @@ function App() {
               {progressSteps.slice(0, currentStep + 1).map((step, index) => <p className={index === currentStep ? "active" : "done"} key={step}>{index === currentStep ? <i className="mini-spinner" aria-hidden="true" /> : <span aria-hidden="true">✓</span>}<span>{step}</span></p>)}
             </div></div>
           </div>
+          {progressPreviews.length > 0 && <div className="progress-previews">{progressPreviews.map((preview, index) => <button type="button" className="progress-preview" onClick={() => openPreview(preview.source, preview.name)} key={preview.name + index}><img src={preview.source} alt={preview.name} /><span>{preview.name}</span></button>)}</div>}
         </article>}
       </div>
+      {chatManagerOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => setChatManagerOpen(false)}><section className="chat-manager-modal" role="dialog" aria-modal="true" aria-label="Все чаты" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>Все чаты</strong><span>{chats.length}</span></div><button type="button" className="modal-close" onClick={() => setChatManagerOpen(false)} aria-label="Закрыть"><X size={18} /></button></header><div className="chat-manager-list">{chats.map((chat) => <div className={chat.id === activeChat.id ? "chat-manager-row active" : "chat-manager-row"} key={chat.id}><Pencil size={15} aria-hidden="true" /><input value={chat.title} onChange={(event) => renameChat(chat.id, event.target.value)} onFocus={() => setActiveChatId(chat.id)} aria-label="Название чата" /><button type="button" onClick={() => { setActiveChatId(chat.id); setChatManagerOpen(false); }}>Открыть</button><button type="button" className="delete-chat" onClick={() => deleteChat(chat.id)} aria-label={"Удалить " + chat.title}><Trash2 size={16} /></button></div>)}</div><button type="button" className="new-chat-wide" onClick={() => { newChat(); setChatManagerOpen(false); }}><Plus size={17} />Новый чат</button></section></div>}
+      {previewModal && <div className="modal-backdrop image-editor-backdrop" role="presentation" onMouseDown={() => setPreviewModal(null)}><section className="image-editor-modal" role="dialog" aria-modal="true" aria-label="Редактор изображения" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>Редактор изображения GPT</strong><span>{previewModal.name}</span></div><button type="button" className="modal-close" onClick={() => setPreviewModal(null)} aria-label="Закрыть"><X size={18} /></button></header><div className="image-stage" onClick={markPreview}><img src={previewModal.source} alt={previewModal.name} />{previewMarkers.map((marker, index) => <i key={index} style={{ left: marker.x + "%", top: marker.y + "%" }}>{index + 1}</i>)}</div><p className="editor-help">Нажмите на нужные места изображения и опишите правку.</p><textarea value={previewComment} onChange={(event) => setPreviewComment(event.target.value)} placeholder="Например: перенести камеру левее отмеченной точки" rows={3} /><button type="button" className="apply-edit" onClick={applyPreviewComment} disabled={!previewComment.trim()}>Добавить комментарий в чат</button></section></div>}
       {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">OpenAI API</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
       {error && <div className="error">{error}</div>}
       <form className="composer" onSubmit={submit}>
