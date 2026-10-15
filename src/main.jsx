@@ -137,6 +137,7 @@ function App() {
         ? answer
         : "Результат не получен; проверьте входные данные.";
       const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+      const execution = Array.isArray(data.execution) ? data.execution : [];
       const wantsPdf = /pdf|пдф/i.test(text);
       const wantsRender = files.length > 1 || /3d|bim|render|рендер|візуал|визуал|pdf|пдф/i.test(text);
       if (wantsRender && files.length) {
@@ -168,7 +169,7 @@ function App() {
           finalAnswer += "\n\n3D: нужен ровно один распознанный 2D-план и фотографии одного этажа.";
         }
       }
-      updateActiveChat((chat) => ({ ...chat, messages: [...nextMessages, { role: "assistant", content: finalAnswer, artifacts }] }));
+      updateActiveChat((chat) => ({ ...chat, messages: [...nextMessages, { role: "assistant", content: finalAnswer, artifacts, execution }] }));
       setFiles([]);
     } catch (err) {
       setError(err.message);
@@ -185,7 +186,7 @@ function App() {
       </header>
       <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
       <div className="messages" aria-live="polite">
-        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p>{message.artifacts?.map((artifact) => artifact.data ? <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}>{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл доступен только до обновления страницы</span>)}</article>)}
+        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p>{message.execution?.length > 0 && <details className="command-log"><summary>Команди виконання</summary>{message.execution.map((item) => <div className={`command-row ${item.status}`} key={item.id}><strong>{item.id} · {item.label}</strong><span>{item.detail}</span></div>)}</details>}{message.artifacts?.map((artifact) => artifact.data ? <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}>{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл доступний лише до оновлення сторінки</span>)}</article>)}
         {isSending && <article className="message assistant progress-message"><span>Grace Plan</span>
           <div className={`execution-spoiler ${executionOpen ? "open" : ""}`}>
             <button className="execution-summary" type="button" onClick={() => setExecutionOpen((open) => !open)} aria-expanded={executionOpen}>
