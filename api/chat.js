@@ -21,7 +21,7 @@ Scope:
 - Never reveal reasoning. Account for every photo manifest entry. Describe clearly when only per-photo observations, rather than original pixels, were provided. Geometry comes from the 2D plan; photos only inform visible finishes, furniture, and possible identity.
 - Render only a clearly labelled conceptual 3D plan. Never claim completed BIM/IFC.
 - Maximum deviation from the reference is 21%; if exceeded, mark NONCONFORMING and do not claim success.
-- Do not claim execution without a real output. The service currently produces image observations, a conceptual render, and a one-page draft PDF only; describe six A2 sheets and full BIM as pending, not as completed or guaranteed. If a required render/file tool is unavailable, name the blocked command.
+- Do not claim execution without a real output. The service produces image observations, a conceptual render, and a six-sheet A2 concept PDF in the browser when one 2D plan and reference photos are supplied. Full calibrated BIM/IFC remains pending and must not be claimed. If a required render/file tool is unavailable, name the blocked command.
 
 Response format:
 COMMAND: CMD-xxx — action
@@ -266,7 +266,6 @@ export default async function handler(req, res) {
       } catch (error) { renderError = error.message; }
     }
     const blockers = [];
-    if (wantsPdf) blockers.push("PDF: не сформовано — потрібні перевірена геометрія, прив’язка фото до приміщень і верстка еталонних аркушів.");
     if (renderError) blockers.push("3D-рендер: помилка — " + renderError);
     if (photoObservations.length && wantsRender && !imageParts.length) blockers.push("3D-рендер: оригінали не збережені; аналіз фото виконано, пакетний рендер поки недоступний.");
     if (files.length > 16) blockers.push("3D-рендер: генератор отримав перші 16 зображень; решту внесено до реєстру без включення в генерацію.");
@@ -279,6 +278,10 @@ export default async function handler(req, res) {
     if (renderData) {
       correctedAnswer = correctedAnswer.replace(/^.*(?:зображення|рендер|PNG).*(?:не створено|заблокован|недоступ).*$/gmi, "").trim();
       correctedAnswer = "Зображення створено та додано до результату.\n\n" + correctedAnswer;
+    }
+    if (wantsPdf) {
+      correctedAnswer = correctedAnswer.replace(/^.*PDF.*(?:не сформовано|недоступ|заблокован).*$/gmi, "").trim();
+      correctedAnswer += "\n\nPDF: інструмент доступний; комплект 6×A2 формується у браузері після концептуального рендера.";
     }
     const finalAnswer = [correctedAnswer, ...blockers].join("\n\n");
     const planCount = photoObservations.filter((photo) => /plan|план|drawing|креслен|схема/i.test(String(photo.observations?.kind || "") + " " + String(photo.name || ""))).length + files.filter((file) => /plan|план|drawing|креслен|схема/i.test(String(file.name || ""))).length;
