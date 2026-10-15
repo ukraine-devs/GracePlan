@@ -123,6 +123,9 @@ function App() {
   const [previewModal, setPreviewModal] = useState(null);
   const [previewComment, setPreviewComment] = useState("");
   const [previewMarkers, setPreviewMarkers] = useState([]);
+  const [dragActive, setDragActive] = useState(false);
+  const [editingChatId, setEditingChatId] = useState(null);
+  const [activityTone, setActivityTone] = useState("idle");
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -132,6 +135,8 @@ function App() {
 
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) || chats[0], [activeChatId, chats]);
   const messages = activeChat?.messages || [welcome];
+  const attachmentPreviews = useMemo(() => files.map((file) => ({ file, url: URL.createObjectURL(file) })), [files]);
+  const agentState = !isSending ? "idle" : currentStep <= 3 ? "reading" : currentStep === 4 ? activityTone : currentStep === 5 ? "command" : "writing";
 
   useEffect(() => { if (!activeChatId && chats[0]) setActiveChatId(chats[0].id); }, [activeChatId, chats]);
   useEffect(() => { let live = true; hydrateArtifacts(chats).then((value) => { if (live) setChats(value); }).catch(() => {}); return () => { live = false; }; }, []);
@@ -145,6 +150,13 @@ function App() {
   }, [chats]);
   useEffect(() => { if (activeChat?.id) localStorage.setItem(ACTIVE_KEY, activeChat.id); }, [activeChat?.id]);
   useEffect(() => { const timer = window.setTimeout(() => setShowStatus(false), 5500); return () => window.clearTimeout(timer); }, []);
+  useEffect(() => () => attachmentPreviews.forEach((item) => URL.revokeObjectURL(item.url)), [attachmentPreviews]);
+  useEffect(() => {
+    if (!isSending || currentStep !== 4) { setActivityTone("thinking"); return; }
+    const tones = ["reasoning", "thinking", "reasoning", "thinking", "command"];
+    const timer = window.setInterval(() => setActivityTone(tones[Math.floor(Math.random() * tones.length)]), 180 + Math.random() * 260);
+    return () => window.clearInterval(timer);
+  }, [isSending, currentStep]);
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (containerRef.current && !containerRef.current.contains(e.target)) {
@@ -189,8 +201,7 @@ function App() {
     setPreviewModal(null);
   }
 
-  const handleFileChange = async (event) => {
-    const selected = Array.from(event.target.files || []);
+  const ingestFiles = async (selected) => {
     const expanded = [];
     setError("");
     try {
@@ -198,7 +209,7 @@ function App() {
         if (/\\.zip$/i.test(file.name) || file.type === "application/zip") {
           const archive = await JSZip.loadAsync(file);
           const entries = Object.values(archive.files).filter((entry) => !entry.dir && /\\.(jpe?g|png|webp)$/i.test(entry.name));
-          if (!entries.length) throw new Error(file.name + ": ZIP не содержит JPEG, PNG или WebP.");
+          if (!entries.length) throw new Error(file.name + ": ZIP contains no JPEG, PNG or WebP images.");
           for (const entry of entries) {
             const extension = entry.name.split(".").pop().toLowerCase();
             const type = extension === "png" ? "image/png" : extension === "webp" ? "image/webp" : "image/jpeg";
@@ -208,18 +219,29 @@ function App() {
         } else if (["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
           expanded.push(file);
         } else {
-          throw new Error(file.name + ": поддерживаются изображения или ZIP с изображениями.");
+          throw new Error(file.name + ": supported formats are images or ZIP archives with images.");
         }
       }
-      setFiles(expanded);
+      setFiles((current) => [...current, ...expanded]);
     } catch (fileError) {
-      setFiles([]);
       setError(fileError.message);
     } finally {
-      event.target.value = "";
       setMenuOpen(false);
     }
   };
+
+  const handleFileChange = async (event) => {
+    await ingestFiles(Array.from(event.target.files || []));
+    event.target.value = "";
+  };
+
+  const handleDrop = async (event) => {
+    event.preventDefault();
+    setDragActive(false);
+    await ingestFiles(Array.from(event.dataTransfer.files || []));
+  };
+
+  const removeFile = (index) => setFiles((current) => current.filter((_, fileIndex) => fileIndex !== index));
 
   const toggleMenu = () => {
     setMenuOpen(!menuOpen);
@@ -284,6 +306,7 @@ function App() {
           setCurrentStep(5);
           try {
             const plan = (await prepareImage(files[planIndexes[0]])).data;
+            artifacts.push({ type: "image", name: "GracePlan_source_2D_exact.jpg", data: plan });
             const photos = files.filter((_, index) => index !== planIndexes[0]);
             const contactSheets = await makeContactSheets(photos);
             setProgressPreviews(contactSheets.map((source, index) => ({ source, name: "Contact sheet " + (index + 1) })));
@@ -325,7 +348,7 @@ function App() {
       <header className="topbar"><div className="brand-row"><div className="brand-text" aria-label="Grace AI Planner">Grace AI Planner</div></div>
         <button className="icon-button chat-manager-button" type="button" onClick={() => setChatManagerOpen(true)} aria-label="Все чаты" title="Все чаты"><Menu size={18} /></button>
         <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
-        <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><button className="icon-button" type="button" onClick={clearChat} aria-label="Clear chat" title="Clear chat"><Trash2 size={18} /></button></div>
+        <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><span className={`agent-indicator ${agentState}`} role="status" aria-label={`Agent status: ${agentState}`} title={`Agent status: ${agentState}`} /></div>
       </header>
       <div className="messages" aria-live="polite">
         {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace AI Planner"}</span><p>{message.content}</p>{message.execution?.length > 0 && <details className="command-log" open><summary>Команди виконання</summary>{message.execution.map((item) => <div className={`command-row ${item.status}`} key={item.id}><strong>{item.id} · {item.label}</strong><span>{item.detail}</span></div>)}</details>}{message.artifacts?.map((artifact) => artifact.data ? artifact.type === "image" ? <button className="preview-card" type="button" onClick={() => openPreview(artifact.data, artifact.name)} key={artifact.name}><img src={artifact.data} alt={artifact.name} /><span>{artifact.name}</span></button> : <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}>{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл недоступний</span>)}</article>)}
@@ -343,11 +366,13 @@ function App() {
           {progressPreviews.length > 0 && <div className="progress-previews">{progressPreviews.map((preview, index) => <button type="button" className="progress-preview" onClick={() => openPreview(preview.source, preview.name)} key={preview.name + index}><img src={preview.source} alt={preview.name} /><span>{preview.name}</span></button>)}</div>}
         </article>}
       </div>
-      {chatManagerOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => setChatManagerOpen(false)}><section className="chat-manager-modal" role="dialog" aria-modal="true" aria-label="Все чаты" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>Все чаты</strong><span>{chats.length}</span></div><button type="button" className="modal-close" onClick={() => setChatManagerOpen(false)} aria-label="Закрыть"><X size={18} /></button></header><div className="chat-manager-list">{chats.map((chat) => <div className={chat.id === activeChat.id ? "chat-manager-row active" : "chat-manager-row"} key={chat.id}><Pencil size={15} aria-hidden="true" /><input value={chat.title} onChange={(event) => renameChat(chat.id, event.target.value)} onFocus={() => setActiveChatId(chat.id)} aria-label="Название чата" /><button type="button" onClick={() => { setActiveChatId(chat.id); setChatManagerOpen(false); }}>Открыть</button><button type="button" className="delete-chat" onClick={() => deleteChat(chat.id)} aria-label={"Удалить " + chat.title}><Trash2 size={16} /></button></div>)}</div><button type="button" className="new-chat-wide" onClick={() => { newChat(); setChatManagerOpen(false); }}><Plus size={17} />Новый чат</button></section></div>}
+      {chatManagerOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => setChatManagerOpen(false)}><section className="chat-manager-modal" role="dialog" aria-modal="true" aria-label="All chats" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>All chats</strong><span>{chats.length}</span></div><button type="button" className="modal-close" onClick={() => setChatManagerOpen(false)} aria-label="Close" title="Close"><X size={18} /></button></header><div className="chat-manager-list">{chats.map((chat) => <div className={chat.id === activeChat.id ? "chat-manager-row active" : "chat-manager-row"} key={chat.id}>{editingChatId === chat.id ? <input autoFocus value={chat.title} onChange={(event) => renameChat(chat.id, event.target.value)} onBlur={() => setEditingChatId(null)} onKeyDown={(event) => event.key === "Enter" && setEditingChatId(null)} aria-label="Chat name" /> : <button type="button" className="chat-name" onClick={() => { setActiveChatId(chat.id); setChatManagerOpen(false); }} title="Open chat">{chat.title}</button>}<button type="button" className="edit-chat" onClick={() => setEditingChatId(chat.id)} aria-label={"Rename " + chat.title} title="Rename"><Pencil size={16} /></button><button type="button" className="delete-chat" onClick={() => deleteChat(chat.id)} aria-label={"Delete " + chat.title} title="Delete"><Trash2 size={16} /></button></div>)}</div><button type="button" className="new-chat-wide" onClick={() => { newChat(); setChatManagerOpen(false); }} title="New chat"><Plus size={17} />New chat</button></section></div>}
       {previewModal && <div className="modal-backdrop image-editor-backdrop" role="presentation" onMouseDown={() => setPreviewModal(null)}><section className="image-editor-modal" role="dialog" aria-modal="true" aria-label="Редактор изображения" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>Редактор изображения GPT</strong><span>{previewModal.name}</span></div><button type="button" className="modal-close" onClick={() => setPreviewModal(null)} aria-label="Закрыть"><X size={18} /></button></header><div className="image-stage" onClick={markPreview}><img src={previewModal.source} alt={previewModal.name} />{previewMarkers.map((marker, index) => <i key={index} style={{ left: marker.x + "%", top: marker.y + "%" }}>{index + 1}</i>)}</div><p className="editor-help">Нажмите на нужные места изображения и опишите правку.</p><textarea value={previewComment} onChange={(event) => setPreviewComment(event.target.value)} placeholder="Например: перенести камеру левее отмеченной точки" rows={3} /><button type="button" className="apply-edit" onClick={applyPreviewComment} disabled={!previewComment.trim()}>Добавить комментарий в чат</button></section></div>}
       {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">OpenAI API</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
       {error && <div className="error">{error}</div>}
-      <form className="composer" onSubmit={submit}>
+      <form className={`composer ${dragActive ? "drag-active" : ""}`} onSubmit={submit} onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragActive(false); }} onDrop={handleDrop}>
+        {attachmentPreviews.length > 0 && <div className="attachment-strip">{attachmentPreviews.map((item, index) => <div className="attachment-chip" key={item.file.name + index}>{item.file.type.startsWith("image/") && <button type="button" className="attachment-thumb" onClick={() => openPreview(item.url, item.file.name)} title="Preview image"><img src={item.url} alt={item.file.name} /></button>}<span title={item.file.name}>{item.file.name}</span><button type="button" className="remove-attachment" onClick={() => removeFile(index)} aria-label={"Remove " + item.file.name} title="Remove"><X size={14} /></button></div>)}</div>}
+        {dragActive && <div className="drop-overlay">Drop files here</div>}
         <label className="prompt-box"><span>Message</span><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="Example: create the Grace Plan PDF package from all plans and photos..." rows={4} /></label>
         <label className="file-row" ref={containerRef}>
           <button type="button" className="file-button" onClick={toggleMenu} aria-label="Выберите файлы" title="Выберите файлы">
