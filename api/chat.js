@@ -276,7 +276,14 @@ export default async function handler(req, res) {
       ? answer.replace(/NEXT:\s*Готово/i, "NEXT: Завантажте 2D-план і щонайменше п’ять фото приміщень.")
       : answer;
     const finalAnswer = [correctedAnswer, ...blockers].join("\n\n");
-    return res.status(200).json({ answer: finalAnswer, artifacts });
+    const planCount = photoObservations.filter((photo) => /plan|план|drawing|креслен|схема/i.test(String(photo.observations?.kind || "") + " " + String(photo.name || ""))).length;
+    const execution = [
+      { id: "CMD-001", label: "Завантаження та облік файлів", status: photoObservations.length || files.length ? "done_verified" : "needs_input", detail: (photoObservations.length || files.length) + " файлів враховано" },
+      { id: "CMD-002", label: "Перевірка 2D-плану", status: planCount === 1 ? "done_with_assumptions" : "needs_input", detail: planCount === 1 ? "Знайдено один план; масштаб потребує перевірки" : "Потрібен рівно один розпізнаний 2D-план" },
+      { id: "CMD-003", label: "Зіставлення фото з приміщеннями", status: photoObservations.length >= 5 ? "done_with_assumptions" : "needs_input", detail: photoObservations.length + " фото проаналізовано; зв’язки з кімнатами потребують підтвердження" },
+      { id: "CMD-004", label: "Структуровані дані Grace Plan", status: projectData ? "done_with_assumptions" : "failed", detail: projectData ? "JSON, кабельний журнал і топологію сформовано" : (projectError || "Дані не сформовано") }
+    ];
+    return res.status(200).json({ answer: finalAnswer, artifacts, execution });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Server error" });
   }
