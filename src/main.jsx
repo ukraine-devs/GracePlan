@@ -75,7 +75,7 @@ function App() {
         : files.length
           ? "Команда обработана. Проверьте результат и следующий этап."
           : "Для выполнения нужны 2D-план и минимум 5 фотографий.";
-      updateActiveChat((chat) => ({ ...chat, messages: [...nextMessages, { role: "assistant", content: finalAnswer }] }));
+      updateActiveChat((chat) => ({ ...chat, messages: [...nextMessages, { role: "assistant", content: finalAnswer, artifacts: Array.isArray(data.artifacts) ? data.artifacts : [] }] }));
       setFiles([]);
     } catch (err) {
       setError(err.message);
@@ -92,7 +92,7 @@ function App() {
       </header>
       <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
       <div className="messages" aria-live="polite">
-        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p></article>)}
+        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p>{message.artifacts?.map((artifact) => <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}>{artifact.name}</a>)}</article>)}
         {isSending && <article className="message assistant progress-message"><span>Grace Plan</span>
           <div className={`execution-spoiler ${executionOpen ? "open" : ""}`}>
             <button className="execution-summary" type="button" onClick={() => setExecutionOpen((open) => !open)} aria-expanded={executionOpen}>
