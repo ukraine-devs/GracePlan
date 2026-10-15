@@ -1,43 +1,22 @@
 import { WORKFLOW_CATALOG } from "./workflowCatalog.js";
 import { createHash } from "node:crypto";
+import { routeIntent, isPlanObservation } from "../lib/graceIntent.js";
 const GRACE_PLAN_SYSTEM = `
-GOAL:
-Execute the Grace Plan workflow from the user's files and request. Do not merely answer or repeat. Each request must show the current command, status, result, and next command.
-
-VISIBLE EXECUTION:
-Always show these stages when applicable:
-1. Завантаження файлів
-2. Перевірка 2D-плану
-3. Зіставлення фото
-4. Побудова 3D-плану
-5. Формування Grace Plan
-Never replace execution with a generic waiting message. Answer the user's actual question before the status. If no files are available, state precisely that a 2D plan and at least five photos are needed; NEXT must request those files, never Готово. Do not claim an operation occurred when it did not.
-
-Scope:
-- Create only the Grace Plan security/BIM proposal package.
-- Match the good reference PDFs: landscape A2, two-column layout, 01 PLAN FLOOR, 02 NETWORKS AND ENGINEERING POINTS, black wall cuts, blue Cat6, ochre 230 V, pink camera fields, C/AP/D/FD/S/R/X IDs, legend, source count, materials, date and page code.
-- Required package: six A2 sheets, A3/A4 supplements, summary A4, photo atlas, IDs, engineering plans, calculations, assumptions, unresolved links, and print checks.
-- Respond fluently in the user's language unless they request another language. Launch mode always GPT Мгновенный.
-- Never reveal reasoning. Account for every photo manifest entry. Describe clearly when only per-photo observations, rather than original pixels, were provided. Geometry comes from the 2D plan; photos only inform visible finishes, furniture, and possible identity.
-- Render only a clearly labelled conceptual 3D plan. Never claim completed BIM/IFC.
-- Maximum deviation from the reference is 21%; if exceeded, mark NONCONFORMING and do not claim success.
-- Do not claim execution without a real output. The service produces image observations, a conceptual render, and a six-sheet A2 concept PDF in the browser when one 2D plan and reference photos are supplied. Full calibrated BIM/IFC remains pending and must not be claimed. If a required render/file tool is unavailable, name the blocked command.
-
-Response format:
-COMMAND: CMD-xxx — action
-STATUS: current status
-OUTPUT: files or Немає
-NEXT: next command or Готово
+You are Grace AI Planner, an architectural project-proposal assistant.
+Respond fluently in the user's language, with clear Markdown, headings only when useful, and no repetitive COMMAND/STATUS/OUTPUT/NEXT boilerplate.
+Answer the current question first. Only request missing inputs relevant to the current operation. @grace explicitly starts a Grace proposal session; simple confirmations continue the active task. Unrelated questions should be answered conversationally.
+The UI runs actual image review, rendering, comparison and PDF composition. Your text is not a tool execution: never claim files are finished, attached or unavailable merely from your answer. Only actual output artifacts are evidence.
+Inputs: one 2D source plan and room/exterior photos. Geometry comes from the original plan, photos inform surfaces/furniture. Account for every input. Differentiate a photograph from a non-architectural image.
+For 2D drawings, inspect thick/thin lines, partitions, walls, openings, symbols, staircases, dimensions, scale and uncertainty. Do not guess ambiguous symbols. Original source bytes are retained independently of resized analysis references.
+Grace reference style: A2 landscape; dominant near-overhead cutaway on left, source plan and engineering plan on right; charcoal wall cuts, white background, blue data, ochre power, restrained pink coverage; photo evidence in supplements. These are style rules, not proof the original PDF is supplied to the image model.
+Generated 3D is a conceptual AI image, not editable BIM/IFC. Exact reconstruction requires calibrated geometry and human approval. Never guarantee 100% geometry/visual fidelity or claim a <=21% deviation without a defined metric and measured comparison.
+Six A2 concept sheets can be produced in the browser from the source plan; rendered illustrations and supplements are attached when actually generated. Full measured engineering, room-photo mapping, BIM/IFC and final reference conformance remain unverified until supported by real checks.
+Do not invent device placements, cable coordinates, scale, dimensions, prices or completed steps. Keep unknowns explicit. Do not expose hidden chain-of-thought.
 `;
 
 const GENERAL_CHAT_SYSTEM = `
-You are Grace AI Planner in normal conversation mode. Answer the user's actual question naturally, clearly, and beautifully in the same language as the user unless they request another language. Do not add Grace Plan commands, project statuses, file requirements, NEXT blocks, or BIM/PDF boilerplate unless the user explicitly invokes Grace or asks about plans, rooms, buildings, renders, engineering, security design, or PDF project proposals. Do not expose hidden reasoning.
+You are Grace AI Planner in ordinary conversation. Reply naturally in the user's language unless requested otherwise. Use readable Markdown (math, lists or tables only when useful). Follow the current message rather than repeating old project instructions. Do not append Grace Plan status blocks, command logs, file requests, project checklists or unsolicited PDF/BIM tasks to unrelated questions. Be helpful across topics, without pretending to have unavailable capabilities or showing hidden reasoning.
 `;
-
-function detectsGraceIntent(text, fileCount) {
-  if (fileCount > 0) return true;
-  return /@grace\b|@грейс\b|\bgrace\s+plan\b|\b(new|нов(?:ый|ий))\s+(plan|план|project|проект)\b|\bпогнали\b|pdf|пдф|\b2d\b|\b3d\b|\bbim\b|рендер|render|план\s+(этажа|поверху|помещения|будинку)|комнат|кімнат|помещен|приміщен|фасад|cctv|камер|nas|nvr|кабел|схем|проектн(?:ое|а|ого)\s+предлож|смотри\s+на\s+фото|дивись\s+на\s+фото/i.test(text);
-}
 
 export const config = { runtime: "nodejs" };
 
@@ -197,6 +176,8 @@ async function readJson(req) {
     messages: Array.isArray(payload.messages) ? payload.messages : [],
     files: Array.isArray(payload.files) ? payload.files : [],
     photoObservations: Array.isArray(payload.photoObservations) ? payload.photoObservations : [],
+    previousMode: payload.previousMode === "grace" ? "grace" : "general",
+    clientPipeline: payload.clientPipeline === true,
   };
 }
 
@@ -204,10 +185,11 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "OPENAI_API_KEY is missing in Vercel Environment Variables." });
   try {
-    const { messages, files, photoObservations } = await readJson(req);
+    const { messages, files, photoObservations, previousMode, clientPipeline } = await readJson(req);
     if (files.some((file) => !file.data || !file.type?.startsWith("image/"))) return res.status(400).json({ error: "Сейчас поддерживаются только изображения; другие файлы не анализируются." });
-    const requestText = messages.filter((message) => message.role === "user").map((message) => String(message.content || "")).join(" ").toLowerCase();
-    const graceMode = detectsGraceIntent(requestText, files.length + photoObservations.length);
+    const requestText = String([...messages].reverse().find((message) => message.role === "user")?.content || "");
+    const decision = routeIntent({ text: requestText, observations: photoObservations, previousMode });
+    const graceMode = decision.mode === "grace";
     const imageParts = files
       .filter((file) => file.data && file.type && file.type.startsWith("image/"))
       .map((file) => ({ type: "image_url", image_url: { url: file.data, detail: "high" } }));
@@ -216,7 +198,8 @@ export default async function handler(req, res) {
       "PHOTO-" + String(index + 1).padStart(3, "0") + " " + String(photo.name || "") + ": " +
       JSON.stringify(photo.observations || {}).slice(0, 3500)
     ).join("\\n");
-    const userMessages = messages.map((message) => ({
+    const history = graceMode ? messages : messages.filter((message) => message.role !== "assistant" || !/COMMAND:|CMD-\d|STATUS:|NEXT:/.test(String(message.content)));
+    const userMessages = history.slice(-30).map((message) => ({
       role: message.role === "assistant" ? "assistant" : "user",
       content: String(message.content || ""),
     }));
@@ -270,7 +253,7 @@ export default async function handler(req, res) {
     const wantsRender = /3d|bim|render|рендер|визуал|зображ|картин|image|picture/.test(requestText);
     let renderData = null;
     let renderError = "";
-    if (wantsRender && imageParts.length) {
+    if (wantsRender && imageParts.length && !clientPipeline) {
       try {
         renderData = await createConceptRender(files, answer, process.env.OPENAI_API_KEY);
         if (renderData) artifacts.push({ type: "image", name: "GracePlan_concept_3D.png", data: renderData });
@@ -278,7 +261,7 @@ export default async function handler(req, res) {
     }
     const blockers = [];
     if (renderError) blockers.push("3D-рендер: помилка — " + renderError);
-    if (photoObservations.length && wantsRender && !imageParts.length) blockers.push("3D-рендер: оригінали не збережені; аналіз фото виконано, пакетний рендер поки недоступний.");
+    if (photoObservations.length && wantsRender && !imageParts.length && !clientPipeline) blockers.push("Original images are required for a render; observations alone are insufficient.");
     if (files.length > 16) blockers.push("3D-рендер: генератор отримав перші 16 зображень; решту внесено до реєстру без включення в генерацію.");
     if (photoObservations.length) blockers.push("Фото: " + photoObservations.length + " знімків проаналізовано окремо; прив’язку до приміщень не підтверджено.");
     if (files.length > 20) blockers.push("Аналіз приміщень: оброблено перші 20 зображень. Решта перебуває в реєстрі без візуальної перевірки.");
@@ -290,13 +273,9 @@ export default async function handler(req, res) {
       correctedAnswer = correctedAnswer.replace(/^.*(?:зображення|рендер|PNG).*(?:не створено|заблокован|недоступ).*$/gmi, "").trim();
       correctedAnswer = "Зображення створено та додано до результату.\n\n" + correctedAnswer;
     }
-    if (wantsPdf) {
-      correctedAnswer = correctedAnswer.replace(/^.*PDF.*(?:не сформовано|недоступ|заблокован).*$/gmi, "").trim();
-      correctedAnswer += "\n\nPDF: інструмент доступний; комплект 6×A2 формується у браузері після концептуального рендера.";
-    }
     const finalAnswer = [correctedAnswer, ...blockers].join("\n\n");
-    const planCount = photoObservations.filter((photo) => /plan|план|drawing|креслен|схема/i.test(String(photo.observations?.kind || "") + " " + String(photo.name || ""))).length + files.filter((file) => /plan|план|drawing|креслен|схема/i.test(String(file.name || ""))).length;
-    const reviewedPhotoCount = photoObservations.length || Math.max(0, files.length - planCount);
+    const planCount = photoObservations.filter(isPlanObservation).length;
+    const reviewedPhotoCount = Math.max(0, photoObservations.length - planCount);
     const execution = [
       { id: "CMD-001", label: "Завантаження та облік файлів", status: photoObservations.length || files.length ? "done_verified" : "needs_input", detail: (photoObservations.length || files.length) + " файлів враховано" },
       { id: "CMD-002", label: "Перевірка 2D-плану", status: planCount === 1 ? "done_with_assumptions" : "needs_input", detail: planCount === 1 ? "Знайдено один план; масштаб потребує перевірки" : "Потрібен рівно один розпізнаний 2D-план" },
@@ -310,15 +289,16 @@ export default async function handler(req, res) {
       if (command.id === "CMD-002" && (files.length || photoObservations.length)) { status = "done_verified"; detail = "Вхідні файли знайдено"; }
       if (["CMD-005","CMD-007"].includes(command.id) && (files.length || photoObservations.length)) { status = "done_verified"; detail = (files.length || photoObservations.length) + " зображень враховано й проаналізовано"; }
       if (command.id === "CMD-010" && planCount === 1) { status = "done_with_assumptions"; detail = "Один 2D-план розпізнано; масштаб не підтверджено"; }
-      if (command.id === "CMD-011") { status = "done_verified"; detail = "Еталонний формат Grace Plan завантажено в правила агента"; }
+      if (command.id === "CMD-011") { status = "done_with_assumptions"; detail = "Reference style profile loaded; original PDF and conformance require review"; }
       if (command.id === "CMD-014" && reviewedPhotoCount >= 5) { status = "done_with_assumptions"; detail = "Автоматичне зіставлення потребує підтвердження користувача"; }
       if (command.id === "CMD-019") { status = "not_implemented"; detail = "Точний BIM потребує масштабу й перевіреної векторної геометрії"; }
       if (command.id === "CMD-021" && planCount === 1 && reviewedPhotoCount >= 5) { status = "done_with_assumptions"; detail = "Входи концептуального рендера підготовлено"; }
       return { ...command, status, detail };
     });
     artifacts.push({ type: "json", name: "GracePlan_67_command_status.json", data: dataUrl("application/json", JSON.stringify(workflowStatus, null, 2)) });
-    return res.status(200).json({ answer: finalAnswer, artifacts, execution, workflowStatus });
+    return res.status(200).json({ answer: finalAnswer, artifacts, execution, workflowStatus, projectData, mode: "grace", intent: decision.reason });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Server error" });
   }
 }
+

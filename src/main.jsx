@@ -2,13 +2,19 @@ import React, { useEffect, useMemo, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { ChevronDown, Menu, Pencil, Plus, Send, Trash2, X, Download } from "lucide-react";
 import "./styles.css";
-import { createConceptReviewPdf } from "./exportDraft.js";
-import JSZip from "jszip";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { ACCEPT_FILES, expandUploads, readFileDataUrl } from "./uploads.js";
+import { routeIntent, isPlanObservation } from "../lib/graceIntent.js";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
 const ACTIVE_KEY = "grace-plan-active-chat";
 const progressSteps = ["Підготовка файлів", "Аналіз кожного фото", "Перевірка 2D-плану", "Зіставлення фото", "Формування даних Grace Plan", "Концептуальний 3D-рендер", "Верстка A2 PDF"];
-const welcome = { role: "assistant", content: "Нужны фото 2D плана и +-5 фото минимум." };
+const welcome = { role: "assistant", content: "Привіт! Можна просто поспілкуватися або розпочати проєкт через @grace. Для пропозиції завантажте 2D-план і фотографії приміщень." };
+
+function MessageText({ text }) {
+  return <div className="message-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>{text}</ReactMarkdown></div>;
+}
 
 const ARTIFACT_DB = "grace-plan-artifacts";
 function openArtifactDb() {
@@ -21,6 +27,13 @@ function openArtifactDb() {
 }
 async function persistArtifacts(messageId, artifacts) {
   if (!artifacts.some((item) => item.data)) return artifacts;
+  artifacts = await Promise.all(artifacts.map(async (item) => {
+    if (!item.data?.startsWith("blob:")) return item;
+    const response = await fetch(item.data);
+    const data = await readFileDataUrl(await response.blob());
+    URL.revokeObjectURL(item.data);
+    return { ...item, data };
+  }));
   const db = await openArtifactDb();
   await new Promise((resolve, reject) => {
     const tx = db.transaction("files", "readwrite");
@@ -62,7 +75,7 @@ function loadChats() {
 }
 function makeTitle(text) { return text.length > 28 ? `${text.slice(0, 28)}...` : text || "New chat"; }
 async function prepareImage(file) {
-  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) { if (file.name.toLowerCase().endsWith(".zip")) { throw new Error("ZIP-файл должен содержать изображения JPEG, PNG или WebP: " + file.name); } throw new Error("Поддерживаются только JPEG, PNG и WebP: " + file.name); }
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) throw new Error("Поддерживаются только JPEG, PNG и WebP: " + file.name);
   const originalBytes = await file.arrayBuffer();
   const digest = await crypto.subtle.digest("SHA-256", originalBytes);
   const originalSha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -76,32 +89,16 @@ async function prepareImage(file) {
     context.fillStyle = "#fff";
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const data = canvas.toDataURL("image/jpeg", 0.82);
+    // A lossless analysis derivative keeps thin lines more legible. The original
+    // is independently retained and is the only image used on the PDF source plan.
+    const data = /plan|план|креслен|drawing/i.test(file.name) ? canvas.toDataURL("image/png") : canvas.toDataURL("image/jpeg", 0.86);
     if (data.length > 3_800_000) throw new Error("Снимок слишком большой после подготовки: " + file.name);
     return { name: file.name, data, originalSha256 };
   } finally { bitmap.close(); }
 }
 
 
-async function extractImagesFromZip(file) {
-    const zip = new JSZip();
-    const contents = await zip.load(file);
-    const images = [];
-    for (const [relativePath, content] of Object.entries(contents)) {
-        if (content instanceof JSZip.File) {
-            const data = await content.arrayBuffer();
-            const mimeType = content.mime || "application/octet-stream";
-            if (mimeType.startsWith("image/")) {
-                const blob = new Blob([data], { type: mimeType });
-                const imgFile = new File([blob], relativePath, { type: mimeType });
-                images.push(imgFile);
-            }
-        }
-    }
-    return images;
-}
-
-function makeContactSheets(photos) {
+async function makeContactSheets(photos) {
   const sheets = [];
   for (let start = 0; start < photos.length; start += 12) {
     const canvas = document.createElement("canvas");
@@ -145,17 +142,21 @@ function App() {
   const [editingChatId, setEditingChatId] = useState(null);
   const [activityTone, setActivityTone] = useState("idle");
   const [graceSession, setGraceSession] = useState(false);
+  const [runLog, setRunLog] = useState([]);
+  const [isPreparingFiles, setIsPreparingFiles] = useState(false);
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [accept, setAccept] = useState("image/jpeg,image/png,image/webp,.zip,application/zip");
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
+  const dragDepth = useRef(0);
+  const messagesRef = useRef(null);
 
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) || chats[0], [activeChatId, chats]);
   const messages = activeChat?.messages || [welcome];
   const attachmentPreviews = useMemo(() => files.map((file) => ({ file, url: URL.createObjectURL(file) })), [files]);
-  const agentState = !isSending ? "idle" : currentStep <= 3 ? "reading" : currentStep === 4 ? activityTone : currentStep === 5 ? "command" : "writing";
+  const agentState = isPreparingFiles ? "reading" : !isSending ? "idle" : currentStep <= 1 ? "reading" : currentStep <= 3 ? "command" : currentStep === 4 ? activityTone : currentStep === 5 ? "command" : "writing";
 
   useEffect(() => { if (!activeChatId && chats[0]) setActiveChatId(chats[0].id); }, [activeChatId, chats]);
   useEffect(() => { let live = true; hydrateArtifacts(chats).then((value) => { if (live) setChats(value); }).catch(() => {}); return () => { live = false; }; }, []);
@@ -172,10 +173,20 @@ function App() {
   useEffect(() => () => attachmentPreviews.forEach((item) => URL.revokeObjectURL(item.url)), [attachmentPreviews]);
   useEffect(() => {
     if (!isSending || currentStep !== 4) { setActivityTone("thinking"); return; }
-    const tones = ["reasoning", "thinking", "reasoning", "thinking", "command"];
-    const timer = window.setInterval(() => setActivityTone(tones[Math.floor(Math.random() * tones.length)]), 180 + Math.random() * 260);
-    return () => window.clearInterval(timer);
+    let timer;
+    let stopped = false;
+    const tick = () => {
+      if (stopped) return;
+      setActivityTone(Math.random() > .5 ? "reasoning" : "thinking");
+      timer = window.setTimeout(tick, 450 + Math.random() * 500);
+    };
+    tick();
+    return () => { stopped = true; window.clearTimeout(timer); };
   }, [isSending, currentStep]);
+  useEffect(() => {
+    const element = messagesRef.current;
+    if (element && element.scrollHeight - element.scrollTop - element.clientHeight < 240) element.scrollTop = element.scrollHeight;
+  }, [messages, currentStep, runLog]);
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (containerRef.current && !containerRef.current.contains(e.target)) {
@@ -187,7 +198,6 @@ function App() {
   }, []);
   function updateActiveChat(updater) { setChats((current) => current.map((chat) => (chat.id === activeChat.id ? updater(chat) : chat))); }
   function newChat() { const chat = createChat(); setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]); }
-  function clearChat() { updateActiveChat((chat) => ({ ...chat, title: "New chat", messages: [welcome] })); setError(""); }
   function renameChat(chatId, title) {
     setChats((current) => current.map((chat) => chat.id === chatId ? { ...chat, title: title.slice(0, 80) || "New chat" } : chat));
   }
@@ -221,44 +231,47 @@ function App() {
   }
 
   const ingestFiles = async (selected) => {
-    const expanded = [];
+    if (isSending || isPreparingFiles) return;
+    setIsPreparingFiles(true);
     setError("");
     try {
-      for (const file of selected) {
-        if (/\\.zip$/i.test(file.name) || file.type === "application/zip") {
-          const archive = await JSZip.loadAsync(file);
-          const entries = Object.values(archive.files).filter((entry) => !entry.dir && /\\.(jpe?g|png|webp)$/i.test(entry.name));
-          if (!entries.length) throw new Error(file.name + ": ZIP contains no JPEG, PNG or WebP images.");
-          for (const entry of entries) {
-            const extension = entry.name.split(".").pop().toLowerCase();
-            const type = extension === "png" ? "image/png" : extension === "webp" ? "image/webp" : "image/jpeg";
-            const blob = await entry.async("blob");
-            expanded.push(new File([blob], entry.name.split("/").pop(), { type }));
-          }
-        } else if (["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
-          expanded.push(file);
-        } else {
-          throw new Error(file.name + ": supported formats are images or ZIP archives with images.");
-        }
-      }
-      setFiles((current) => [...current, ...expanded]);
+      const result = await expandUploads(selected, { existingCount: files.length, existingBytes: files.reduce((sum, file) => sum + file.size, 0) });
+      setFiles((current) => [...current, ...result.files]);
+      if (result.errors.length) setError(result.errors.join("\n"));
     } catch (fileError) {
       setError(fileError.message);
     } finally {
+      setIsPreparingFiles(false);
       setMenuOpen(false);
     }
   };
 
   const handleFileChange = async (event) => {
-    await ingestFiles(Array.from(event.target.files || []));
-    event.target.value = "";
+    const inputElement = event.currentTarget;
+    const selected = Array.from(inputElement.files || []);
+    inputElement.value = "";
+    await ingestFiles(selected);
   };
 
   const handleDrop = async (event) => {
     event.preventDefault();
+    event.stopPropagation();
+    dragDepth.current = 0;
     setDragActive(false);
     await ingestFiles(Array.from(event.dataTransfer.files || []));
   };
+
+  useEffect(() => {
+    const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes("Files");
+    const enter = (event) => { if (hasFiles(event)) { event.preventDefault(); dragDepth.current += 1; setDragActive(true); } };
+    const over = (event) => { if (hasFiles(event)) { event.preventDefault(); event.dataTransfer.dropEffect = isSending ? "none" : "copy"; } };
+    const leave = (event) => { if (hasFiles(event)) { dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) setDragActive(false); } };
+    const drop = (event) => { if (hasFiles(event)) handleDrop(event); };
+    const reset = () => { dragDepth.current = 0; setDragActive(false); };
+    window.addEventListener("dragenter", enter); window.addEventListener("dragover", over);
+    window.addEventListener("dragleave", leave); window.addEventListener("drop", drop); window.addEventListener("blur", reset);
+    return () => { window.removeEventListener("dragenter", enter); window.removeEventListener("dragover", over); window.removeEventListener("dragleave", leave); window.removeEventListener("drop", drop); window.removeEventListener("blur", reset); };
+  }, [files, isSending, isPreparingFiles]);
 
   const removeFile = (index) => setFiles((current) => current.filter((_, fileIndex) => fileIndex !== index));
 
@@ -267,7 +280,7 @@ function App() {
   };
 
   const selectOption = () => {
-    const allowed = "image/jpeg,image/png,image/webp,.zip,application/zip";
+    const allowed = ACCEPT_FILES;
     setAccept(allowed);
     if (fileInputRef.current) {
       fileInputRef.current.accept = allowed;
@@ -276,105 +289,173 @@ function App() {
     setMenuOpen(false);
   };
 
+  function stage(id, label, status = "running") {
+    setRunLog((current) => {
+      const item = { id, label, status };
+      return current.some((entry) => entry.id === id) ? current.map((entry) => entry.id === id ? item : entry) : [...current, item];
+    });
+  }
+  async function requestJson(url, payload) {
+    const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const raw = await response.text();
+    let result;
+    try { result = JSON.parse(raw); } catch { throw new Error("The server returned a non-JSON response (" + response.status + "). Please retry with fewer files."); }
+    if (!response.ok) throw new Error(result.error || ("Request failed: " + response.status));
+    return result;
+  }
+  function jsonArtifact(name, value) {
+    return { type: "json", name, data: "data:application/json;base64," + btoa(Array.from(new TextEncoder().encode(JSON.stringify(value, null, 2)), (byte) => String.fromCharCode(byte)).join("")) };
+  }
+
   async function submit(event) {
     event.preventDefault();
     const text = input.trim();
-    if ((!text && !files.length) || isSending) return;
-    const projectIntent = files.length > 0 || /@grace\b|@грейс\b|grace\s+plan|нов(?:ый|ий)\s+(план|проект)|new\s+(plan|project)|погнали|pdf|пдф|\b2d\b|\b3d\b|\bbim\b|рендер|render|комнат|кімнат|помещен|приміщен|фасад|cctv|камер|nas|nvr|кабел|схем|проектн.*предлож|смотри\s+на\s+фото|дивись\s+на\s+фото/i.test(text);
-    setGraceSession(projectIntent);
-    const nextMessages = [...messages, { role: "user", content: text || "Проаналізуйте прикріплені файли." }];
-    updateActiveChat((chat) => ({ ...chat, title: chat.messages.length === 1 ? makeTitle(text || files[0].name) : chat.title, messages: nextMessages }));
-    setInput(""); setError(""); setIsSending(true); setCurrentStep(files.length ? 0 : 4); setPhotoProgress(files.length ? `0/${files.length}` : ""); setExecutionOpen(true); setProgressPreviews([]);
+    if ((!text && !files.length) || isSending || isPreparingFiles) return;
+    const submittedFiles = [...files];
+    const chatId = activeChat.id;
+    const writeChat = (updater) => setChats((current) => current.map((chat) => chat.id === chatId ? updater(chat) : chat));
+    let decision = routeIntent({ text, previousMode: activeChat.lastMode || "general" });
+    setGraceSession(decision.mode === "grace");
+    const messageId = crypto.randomUUID();
+    const userId = crypto.randomUUID();
+    const nextMessages = [...messages, { id: userId, role: "user", content: text || "Please review the attached files." }];
+    writeChat((chat) => ({ ...chat, title: chat.messages.length === 1 ? makeTitle(text || submittedFiles[0]?.name) : chat.title, messages: nextMessages }));
+    setInput(""); setError(""); setFiles([]); setIsSending(true);
+    setCurrentStep(submittedFiles.length ? 0 : 4); setPhotoProgress(""); setExecutionOpen(true);
+    setProgressPreviews([]); setRunLog([]);
+    const userArtifacts = [];
     try {
       const photoObservations = [];
-      let expandedFiles = [];
-      for (const file of files) {
-        if (file.name.toLowerCase().endsWith(".zip")) {
-          try {
-            const extracted = await extractImagesFromZip(file);
-            if (extracted.length === 0) {
-              throw new Error("ZIP-архив не содержит изображений: " + file.name);
-            }
-            expandedFiles.push(...extracted);
-          } catch (zipErr) {
-            throw new Error("Ошибка обработки ZIP-архива " + file.name + ": " + zipErr.message);
-          }
-        } else {
-          expandedFiles.push(file);
-        }
-      }
-      for (const file of expandedFiles) {
-        setCurrentStep(0);
+      const preparedImages = [];
+      for (let index = 0; index < submittedFiles.length; index++) {
+        const file = submittedFiles[index];
+        setCurrentStep(0); stage("read-" + index, "Reading " + file.name);
         const prepared = await prepareImage(file);
+        preparedImages.push(prepared);
+        stage("read-" + index, "Read " + file.name, "done");
+        userArtifacts.push({ type: "image", name: file.relativePath || file.name, data: prepared.data });
         setProgressPreviews((current) => [...current.slice(-3), { source: prepared.data, name: file.name }]);
-        setCurrentStep(1);
-        const analysisResponse = await fetch("/api/analyze-image", {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(prepared)
-        });
-        const analysis = await analysisResponse.json();
-        if (!analysisResponse.ok) throw new Error(file.name + ": " + (analysis.error || "Анализ не удался"));
-        photoObservations.push(analysis);
-        setPhotoProgress(`${photoObservations.length}/${files.length}`);
+        setCurrentStep(1); stage("analysis-" + index, "Analyzing " + file.name);
+        const analysis = await requestJson("/api/analyze-image", prepared);
+        photoObservations.push({ ...analysis, source_path: file.relativePath || file.name });
+        stage("analysis-" + index, "Analyzed " + file.name, "done");
+        setPhotoProgress((index + 1) + "/" + submittedFiles.length);
       }
-      if (files.length) setCurrentStep(2);
-      await new Promise((resolve) => window.setTimeout(resolve, files.length ? 250 : 0));
-      if (files.length) setCurrentStep(3);
-      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextMessages, files: [], photoObservations }) });
-      const raw = await response.text();
-      let data;
-      try { data = raw ? JSON.parse(raw) : {}; } catch { throw new Error(raw || "Сервер вернул некорректный ответ."); }
-      if (!response.ok) throw new Error(data.error || "API error");
+      decision = routeIntent({ text, observations: photoObservations, previousMode: activeChat.lastMode || "general" });
+      setGraceSession(decision.mode === "grace");
+      if (userArtifacts.length) {
+        const savedUserArtifacts = await persistArtifacts(userId, userArtifacts);
+        nextMessages[nextMessages.length - 1].artifacts = savedUserArtifacts;
+        writeChat((chat) => ({ ...chat, messages: [...nextMessages] }));
+      }
       setCurrentStep(4);
-      await new Promise((resolve) => window.setTimeout(resolve, 650));
-      const previousAssistant = [...nextMessages].reverse().find((message) => message.role === "assistant");
-      const answer = data.answer?.trim();
-      let finalAnswer = answer && answer !== previousAssistant?.content?.trim()
-        ? answer
-        : "Результат не получен; проверьте входные данные.";
-      const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
-      const execution = Array.isArray(data.execution) ? data.execution : [];
-      const wantsPdf = /pdf|пдф/i.test(text);
-      const wantsRender = files.length > 1 || /3d|bim|render|рендер|візуал|визуал|зображ|картин|image|picture|pdf|пдф/i.test(text);
-      if (wantsRender && files.length) {
-        const planIndexes = photoObservations.map((item, index) =>
-          /plan|план|drawing|чертёж|схема/i.test(String(item.observations?.kind || "") + " " + item.name) ? index : -1
-        ).filter((index) => index >= 0);
-        if (planIndexes.length === 1 && files.length > 1) {
-          setCurrentStep(5);
-          try {
-            const plan = (await prepareImage(files[planIndexes[0]])).data;
-            artifacts.push({ type: "image", name: "GracePlan_source_2D_exact.jpg", data: plan });
-            const photos = files.filter((_, index) => index !== planIndexes[0]);
-            const contactSheets = await makeContactSheets(photos);
-            setProgressPreviews(contactSheets.map((source, index) => ({ source, name: "Contact sheet " + (index + 1) })));
-            contactSheets.forEach((source, index) => artifacts.push({ type: "image", name: "GracePlan_contact_sheet_" + (index + 1) + ".jpg", data: source }));
-            const renderResponse = await fetch("/api/render-concept", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ plan, contactSheets, photoCount: photos.length })
-            });
-            const result = await renderResponse.json();
-            if (!renderResponse.ok) throw new Error(result.error || "Render failed");
-            artifacts.push(result.artifact);
-            setProgressPreviews([{ source: result.artifact.data, name: result.artifact.name }]);
-            finalAnswer += "\\n\\n3D: концептуальный рендер готов; точная BIM-геометрия и связь всех комнат с фото не подтверждены.";
-            if (wantsPdf) {
-              setCurrentStep(6);
-              const pdfUrl = await createConceptReviewPdf({ renderData: result.artifact.data, planData: plan, photoCount: photos.length, contactSheets });
-              artifacts.push({ type: "pdf", name: "GracePlan_6A2_concept_package.pdf", data: pdfUrl });
-              finalAnswer += "\\nA2: сформовано комплект із 6 аркушів за композицією еталона. Точне BIM/IFC і вимір відхилення 21% потребують каліброваної геометрії.";
-            }
-          } catch (renderError) { finalAnswer += "\n\n3D: не сформирован — " + renderError.message; }
-        } else {
-          finalAnswer += "\n\n3D: нужен ровно один распознанный 2D-план и фотографии одного этажа.";
-        }
+      stage("reply", decision.mode === "grace" ? "Preparing Grace proposal data" : "Preparing reply");
+      let data;
+      try {
+        data = await requestJson("/api/chat", {
+          messages: nextMessages.map(({ role, content }) => ({ role, content })), files: [],
+          photoObservations, previousMode: activeChat.lastMode || "general", clientPipeline: true
+        });
+      } catch (chatError) {
+        if (decision.mode !== "grace" || !submittedFiles.length) throw chatError;
+        data = { answer: "", mode: "grace", artifacts: [], execution: [] };
+        stage("reply", "Text reply unavailable; continuing the proposal from source images", "failed");
       }
-      const messageId = crypto.randomUUID();
-      const persistedArtifacts = await persistArtifacts(messageId, artifacts);
-      updateActiveChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: finalAnswer, artifacts: persistedArtifacts, execution }] }));
-      setFiles([]);
+      if (data.answer) stage("reply", "Reply received", "done");
+      const projectMode = data.mode === "grace";
+      setGraceSession(projectMode);
+      let finalAnswer = data.answer?.trim() || "";
+      const artifacts = Array.isArray(data.artifacts) ? [...data.artifacts] : [];
+      const execution = Array.isArray(data.execution) ? [...data.execution] : [];
+      const wantsPdf = projectMode && (/pdf|пдф|proposal|предлож|пропоз|@grace|погнали|новий проект|новый проект/i.test(text) || submittedFiles.length > 1);
+      const wantsRender = projectMode && (wantsPdf || submittedFiles.length > 1 || /3d|bim|render|рендер|візуал|визуал/i.test(text));
+      const planIndexes = photoObservations.map((item, index) => isPlanObservation(item) ? index : -1).filter((index) => index >= 0);
+      const previousArtifacts = [...messages].reverse().flatMap((message) => message.artifacts || []);
+      let planData = previousArtifacts.find((item) => item.kind === "source_plan")?.data;
+      let renderData = previousArtifacts.find((item) => item.kind === "concept_render" || item.name === "GracePlan_concept_3D.png")?.data;
+      let contactSheets = previousArtifacts.filter((item) => item.kind === "contact_sheet").map((item) => item.data);
+      let photoCount = submittedFiles.length ? submittedFiles.length - planIndexes.length : previousArtifacts.find((item) => item.kind === "source_plan")?.photoCount || 0;
+      let renderQa = null;
+      if (projectMode && planIndexes.length === 1) {
+        const planIndex = planIndexes[0];
+        const sourceFile = submittedFiles[planIndex];
+        const sourceData = await readFileDataUrl(sourceFile);
+        planData = sourceData;
+        renderData = null; // A changed source must never silently reuse a previous render.
+        const preserved = { type: "image", kind: "source_plan", name: "GracePlan_source_2D_original." + (sourceFile.type === "image/png" ? "png" : sourceFile.type === "image/webp" ? "webp" : "jpg"), data: sourceData, photoCount };
+        artifacts.push(preserved);
+        artifacts.push(jsonArtifact("GracePlan_plan_fidelity.json", {
+          source_name: sourceFile.relativePath || sourceFile.name, source_sha256: preparedImages[planIndex].originalSha256,
+          method: "original_source_bytes_preserved", generative_redraw: false,
+          pixel_geometry: "Source plan is reused, not redrawn. PDF view may be scaled uniformly.",
+          interpretation: photoObservations[planIndex].observations,
+          vector_reconstruction: "not_implemented", semantic_accuracy: "requires_human_review",
+          render_accuracy_guarantee: false
+        }));
+        stage("source", "Original 2D plan preserved (SHA-256 recorded)", "done");
+        const photos = submittedFiles.filter((_, index) => index !== planIndex);
+        contactSheets = await makeContactSheets(photos);
+        contactSheets.forEach((source, index) => artifacts.push({ type: "image", kind: "contact_sheet", name: "GracePlan_contact_sheet_" + (index + 1) + ".jpg", data: source }));
+        if (wantsRender && photos.length) {
+          setCurrentStep(5); stage("render", "Creating conceptual 3D render");
+          setProgressPreviews(contactSheets.map((source, index) => ({ source, name: "Reference contact sheet " + (index + 1) })));
+          try {
+            const plan = preparedImages[planIndex].data;
+            const result = await requestJson("/api/render-concept", { plan, contactSheets, photoCount, request: text });
+            renderData = result.artifact.data;
+            artifacts.push({ ...result.artifact, kind: "concept_render" });
+            setProgressPreviews([{ source: renderData, name: "Generated concept - awaiting review" }]);
+            stage("render", "Conceptual render created", "done");
+            stage("render-qa", "Comparing render against source plan");
+            try {
+              const qa = await requestJson("/api/verify-render", { plan, render: renderData });
+              renderQa = qa;
+              artifacts.push(jsonArtifact("GracePlan_render_review.json", qa));
+              stage("render-qa", qa.status === "mismatch_detected" ? "Differences detected - review required" : "Visual comparison complete - manual review required", "done");
+            } catch (qaError) {
+              renderQa = { status: "review_unavailable", error: qaError.message, guaranteed: false };
+              artifacts.push(jsonArtifact("GracePlan_render_review.json", renderQa));
+              stage("render-qa", "Comparison unavailable; render is unverified", "failed");
+            }
+          } catch (renderError) {
+            stage("render", "Render failed: " + renderError.message, "failed");
+            setError(renderError.message);
+          }
+        }
+      } else if (projectMode && submittedFiles.length && planIndexes.length !== 1) {
+        planData = null; renderData = null; contactSheets = [];
+        stage("source", "Exactly one recognized floor plan is required", "failed");
+      }
+      if (wantsPdf && planData && renderData) {
+        setCurrentStep(6); stage("pdf", "Composing A2 PDF from preserved source");
+        try {
+          const photoEvidence = userArtifacts.filter((_, index) => !planIndexes.includes(index));
+          const { createConceptReviewPdf } = await import("./proposalPdf.js");
+          const pdfUrl = await createConceptReviewPdf({ renderData, planData, photoCount, contactSheets, renderQa,
+            project: data.projectData || {}, observations: photoObservations, photos: photoEvidence,
+            sourceChecks: photoObservations.map((photo) => ({ name: photo.name, sha256: photo.originalSha256 })),
+            onProgress: (label) => stage("pdf", label)
+          });
+          const number = String(messages.flatMap((message) => message.artifacts || []).filter((item) => item.type === "pdf").length + 1).padStart(3, "0");
+          const filename = "проектное_предложение_" + number + ".pdf";
+          artifacts.push({ type: "pdf", name: filename, data: pdfUrl });
+          stage("pdf", "Final proposal PDF created and validated", "done");
+          finalAnswer = "Готово — проєктна пропозиція у PDF нижче. Документ містить 6 A2, тематичні додатки A3, фотоатлас і загальний A4. Геометрія, інженерні прив'язки та відсоток візуальної відповідності потребують перевірки.";
+          execution.push({ id: "PDF-EXPORT", label: "Final proposal PDF", status: "done_with_assumptions", detail: filename + " · measured reference layout, all source photos, A2/A3/A4 format checks" });
+        } catch (pdfError) {
+          stage("pdf", "PDF failed: " + pdfError.message, "failed"); setError(pdfError.message);
+          finalAnswer = "Не вдалося завершити PDF: " + pdfError.message + ". Проміжні файли не є фінальним результатом.";
+          execution.push({ id: "PDF-EXPORT", label: "A2 PDF", status: "failed", detail: pdfError.message });
+        }
+      } else if (wantsPdf) {
+        finalAnswer = !planData ? "Для завершення пропозиції потрібен один розпізнаний 2D-план і фото приміщень. Фінальний PDF ще не сформовано." : "Фінальний PDF потребує завершеного рендера. Сталася помилка генерації; проміжні технічні файли не видаються як результат.";
+      }
+      setCurrentStep(6);
+      const savedArtifacts = await persistArtifacts(messageId, artifacts);
+      writeChat((chat) => ({ ...chat, lastMode: projectMode ? "grace" : "general", messages: [...nextMessages, { id: messageId, role: "assistant", content: finalAnswer, artifacts: savedArtifacts, execution, mode: data.mode }] }));
     } catch (err) {
-      setError(err.message);
-      updateActiveChat((chat) => ({ ...chat, messages }));
+      setError(err.message); setInput(text);
+      writeChat((chat) => ({ ...chat, messages: nextMessages }));
     } finally {
       setCurrentStep(-1); setIsSending(false); setProgressPreviews([]);
     }
@@ -385,10 +466,10 @@ function App() {
       <header className="topbar"><div className="brand-row"><div className="brand-text" aria-label="Grace AI Planner">Grace AI Planner</div></div>
         <button className="icon-button chat-manager-button" type="button" onClick={() => setChatManagerOpen(true)} aria-label="All chats" title="All chats"><Menu size={18} /></button>
         <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
-        <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><span className={`agent-indicator ${agentState}`} role="status" aria-label={`Agent status: ${agentState}`} title={`Agent status: ${agentState}`} /></div>
+        <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><span className={`agent-indicator ${agentState}`} role="status" aria-label={`Agent status: ${agentState}`} title={`Activity: ${agentState}. Animated UI indicator, not hidden model reasoning.`} /></div>
       </header>
-      <div className="messages" aria-live="polite">
-        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace AI Planner"}</span><p>{message.content}</p>{message.execution?.length > 0 && <details className="command-log" open><summary>Команди виконання</summary>{message.execution.map((item) => <div className={`command-row ${item.status}`} key={item.id}><strong>· {item.label}</strong><span>{item.detail.toLowerCase()}</span></div>)}</details>}{message.artifacts?.map((artifact) => artifact.data ? artifact.type === "image" ? <button className="preview-card" type="button" onClick={() => openPreview(artifact.data, artifact.name)} key={artifact.name}><img src={artifact.data} alt={artifact.name} /><span>{artifact.name}</span></button> : <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}><Download size={16} style={{ marginRight: 4 }} /> {artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл недоступний</span>)}</article>)}
+      <div className="messages" aria-live="polite" ref={messagesRef}>
+        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Grace AI Planner"}</span><MessageText text={message.content} />{message.execution?.length > 0 && <details className="command-log" open><summary>Execution commands</summary>{message.execution.map((item) => <div className={`command-row ${item.status}`} key={item.id}><strong>· {item.label}</strong><span>{item.detail}</span></div>)}</details>}{message.artifacts?.filter((artifact) => message.role === "user" || artifact.type === "pdf").map((artifact) => artifact.data ? artifact.type === "image" ? <button className="preview-card" type="button" onClick={() => openPreview(artifact.data, artifact.name)} key={artifact.name}><img src={artifact.data} alt={artifact.name} /><span>{artifact.name}</span></button> : <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}><Download size={16} aria-hidden="true" />{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл недоступний</span>)}</article>)}
         {isSending && <article className="message assistant progress-message"><span>Grace AI Planner</span>
           <div className={`execution-spoiler ${executionOpen ? "open" : ""}`}>
             <button className="execution-summary" type="button" onClick={() => setExecutionOpen((open) => !open)} aria-expanded={executionOpen}>
@@ -397,22 +478,22 @@ function App() {
               <ChevronDown className="spoiler-chevron" size={16} aria-hidden="true" />
             </button>
             {graceSession && <div className="execution-details" aria-hidden={!executionOpen}><div>
-              {progressSteps.slice(0, currentStep + 1).map((step, index) => <p className={index === currentStep ? "active" : "done"} key={step}>{index === currentStep ? <i className="mini-spinner" aria-hidden="true" /> : <span aria-hidden="true">✓</span>}<span>{step}</span></p>)}
+              {runLog.map((step) => <p className={step.status === "running" ? "active" : step.status} key={step.id}>{step.status === "running" ? <i className="mini-spinner" aria-hidden="true" /> : <span aria-hidden="true">{step.status === "failed" ? "!" : "✓"}</span>}<span>{step.label}</span></p>)}
             </div></div>}
           </div>
           {graceSession && progressPreviews.length > 0 && <div className="progress-previews">{progressPreviews.map((preview, index) => <button type="button" className="progress-preview" onClick={() => openPreview(preview.source, preview.name)} key={preview.name + index}><img src={preview.source} alt={preview.name} /><span>{preview.name}</span></button>)}</div>}
         </article>}
       </div>
       {chatManagerOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => setChatManagerOpen(false)}><section className="chat-manager-modal" role="dialog" aria-modal="true" aria-label="All chats" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>All chats</strong><span>{chats.length}</span></div><button type="button" className="modal-close" onClick={() => setChatManagerOpen(false)} aria-label="Close" title="Close"><X size={18} /></button></header><div className="chat-manager-list">{chats.map((chat) => <div className={chat.id === activeChat.id ? "chat-manager-row active" : "chat-manager-row"} key={chat.id}>{editingChatId === chat.id ? <input autoFocus value={chat.title} onChange={(event) => renameChat(chat.id, event.target.value)} onBlur={() => setEditingChatId(null)} onKeyDown={(event) => event.key === "Enter" && setEditingChatId(null)} aria-label="Chat name" /> : <button type="button" className="chat-name" onClick={() => { setActiveChatId(chat.id); setChatManagerOpen(false); }} title="Open chat">{chat.title}</button>}<button type="button" className="edit-chat" onClick={() => setEditingChatId(chat.id)} aria-label={"Rename " + chat.title} title="Rename"><Pencil size={16} /></button><button type="button" className="delete-chat" onClick={() => deleteChat(chat.id)} aria-label={"Delete " + chat.title} title="Delete"><Trash2 size={16} /></button></div>)}</div><button type="button" className="new-chat-wide" onClick={() => { newChat(); setChatManagerOpen(false); }} title="New chat"><Plus size={17} />New chat</button></section></div>}
-      {previewModal && <div className="modal-backdrop image-editor-backdrop" role="presentation" onMouseDown={() => setPreviewModal(null)}><section className="image-editor-modal" role="dialog" aria-modal="true" aria-label="Редактор изображения" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>Редактор изображения GPT</strong><span>{previewModal.name}</span></div><button type="button" className="modal-close" onClick={() => setPreviewModal(null)} aria-label="Закрыть"><X size={18} /></button></header><div className="image-stage" onClick={markPreview}><img src={previewModal.source} alt={previewModal.name} />{previewMarkers.map((marker, index) => <i key={index} style={{ left: marker.x + "%", top: marker.y + "%" }}>{index + 1}</i>)}</div><p className="editor-help">Нажмите на нужные места изображения и опишите правку.</p><textarea value={previewComment} onChange={(event) => setPreviewComment(event.target.value)} placeholder="Например: перенести камеру левее отмеченной точки" rows={3} /><button type="button" className="apply-edit" onClick={applyPreviewComment} disabled={!previewComment.trim()}>Добавить комментарий в чат</button></section></div>}
+      {previewModal && <div className="modal-backdrop image-editor-backdrop" role="presentation" onMouseDown={() => setPreviewModal(null)}><section className="image-editor-modal" role="dialog" aria-modal="true" aria-label="Image review" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>Image review & comments</strong><span>{previewModal.name}</span></div><button type="button" className="modal-close" onClick={() => setPreviewModal(null)} aria-label="Close" title="Close"><X size={18} /></button></header><div className="image-stage" onClick={markPreview}><img src={previewModal.source} alt={previewModal.name} />{previewMarkers.map((marker, index) => <i key={index} style={{ left: marker.x + "%", top: marker.y + "%" }}>{index + 1}</i>)}</div><p className="editor-help">Select image locations and describe your requested changes. This adds a comment; it does not edit the image automatically.</p><textarea value={previewComment} onChange={(event) => setPreviewComment(event.target.value)} placeholder="Describe changes to the marked area" rows={3} /><button type="button" className="apply-edit" onClick={applyPreviewComment} disabled={!previewComment.trim()}>Add comment to chat</button></section></div>}
       {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">OpenAI API</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
       {error && <div className="error">{error}</div>}
-      <form className={`composer ${dragActive ? "drag-active" : ""}`} onSubmit={submit} onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragActive(false); }} onDrop={handleDrop}>
+      <form className={`composer ${dragActive ? "drag-active" : ""}`} onSubmit={submit} onPaste={(event) => { const incoming = Array.from(event.clipboardData.files || []); if (incoming.length) { event.preventDefault(); ingestFiles(incoming); } }}>
         {attachmentPreviews.length > 0 && <div className="attachment-strip">{attachmentPreviews.map((item, index) => <div className="attachment-chip" key={item.file.name + index}>{item.file.type.startsWith("image/") && <button type="button" className="attachment-thumb" onClick={() => openPreview(item.url, item.file.name)} title="Preview image"><img src={item.url} alt={item.file.name} /></button>}<span title={item.file.name}>{item.file.name}</span><button type="button" className="remove-attachment" onClick={() => removeFile(index)} aria-label={"Remove " + item.file.name} title="Remove"><X size={14} /></button></div>)}</div>}
         {dragActive && <div className="drop-overlay">Drop files here</div>}
         <label className="prompt-box"><span>Message</span><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="Example: create the Grace Plan PDF package from all plans and photos..." rows={4} /></label>
-        <label className="file-row" ref={containerRef}>
-          <button type="button" className="file-button" onClick={toggleMenu} aria-label="Выберите файлы" title="Выберите файлы">
+        <div className="file-row" ref={containerRef}>
+          <button type="button" className="file-button" onClick={toggleMenu} disabled={isSending || isPreparingFiles} aria-label="Attach files" title="Attach files" aria-expanded={menuOpen}>
             <Plus size={18} />
           </button>
           {menuOpen && (
@@ -421,11 +502,12 @@ function App() {
             </div>
           )}
           <input type="file" ref={fileInputRef} multiple accept={accept} style={{display: 'none'}} onChange={handleFileChange} />
-        </label>
-        <button type="submit" disabled={isSending || (!input.trim() && !files.length)}>Send<Send size={18} /></button>
+        </div>
+        {isPreparingFiles && <span className="upload-preparing" role="status">Preparing attachments…</span>}
+        <button type="submit" aria-label="Send" title="Send" disabled={isSending || isPreparingFiles || (!input.trim() && !files.length)}>Send<Send size={18} /></button>
       </form>
     </section></main>
   );
 }
 createRoot(document.getElementById("root")).render(<App />);
-// force rebuild Thu Oct 15 12:58:34 EEST 2026
+

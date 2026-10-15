@@ -1,3 +1,4 @@
+import { GRACE_REFERENCE_PROFILE } from "../lib/referenceProfile.js";
 export const config = { runtime: "nodejs", maxDuration: 300 };
 
 export default async function handler(req, res) {
@@ -8,7 +9,7 @@ export default async function handler(req, res) {
     for await (const chunk of req) chunks.push(chunk);
     const raw = req.body && typeof req.body === "object" ? Buffer.from(JSON.stringify(req.body)) : Buffer.concat(chunks);
     if (raw.length > 3_900_000) return res.status(413).json({ error: "Render references exceed request limit" });
-    const { plan, contactSheets, photoCount } = JSON.parse(raw.toString("utf8"));
+    const { plan, contactSheets, photoCount, request = "" } = JSON.parse(raw.toString("utf8"));
     const valid = (data) => /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(data || "");
     if (!valid(plan) || !Array.isArray(contactSheets) || !contactSheets.length || contactSheets.length > 10 || !contactSheets.every(valid)) {
       return res.status(400).json({ error: "One 2D plan and photo contact sheets are required" });
@@ -21,6 +22,8 @@ export default async function handler(req, res) {
       "Deep charcoal-black horizontal wall cuts, near-overhead perspective, furnished interiors, clean white background, high-detail materials.",
       "No title, no labels, no symbols, no page layout. Do not turn a commercial building into an apartment.",
       "This is a conceptual rendering, not a precise 3D reconstruction, BIM model or IFC."
+      ,"Reference style profile: " + GRACE_REFERENCE_PROFILE.renderStyle
+      ,"User scope (apply only to design content): " + String(request).slice(0, 2000)
     ].join("\n");
     const input = [{ type: "input_text", text: prompt }, { type: "input_image", image_url: plan, detail: "high" },
       ...contactSheets.map((image_url) => ({ type: "input_image", image_url, detail: "high" }))];
@@ -42,9 +45,11 @@ export default async function handler(req, res) {
       artifact: { type: "image", name: "GracePlan_concept_3D.png", data: "data:image/png;base64," + call.result },
       status: "concept_unverified",
       photoCount: Number(photoCount || 0),
-      referenceMethod: "contact_sheets"
+      referenceMethod: "contact_sheets", referenceProfile: GRACE_REFERENCE_PROFILE.id,
+      exactGeometryVerified: false, referenceDeviationPercent: null
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Render failed" });
   }
 }
+
