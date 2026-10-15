@@ -299,7 +299,7 @@ function App() {
             finalAnswer += "\\n\\n3D: концептуальный рендер готов; точная BIM-геометрия и связь всех комнат с фото не подтверждены.";
             if (wantsPdf) {
               setCurrentStep(6);
-              const pdfUrl = await createConceptReviewPdf({ renderData: result.artifact.data, planData: plan, photoCount: photos.length });
+              const pdfUrl = await createConceptReviewPdf({ renderData: result.artifact.data, planData: plan, photoCount: photos.length, contactSheets });
               artifacts.push({ type: "pdf", name: "GracePlan_6A2_concept_package.pdf", data: pdfUrl });
               finalAnswer += "\\nA2: сформовано комплект із 6 аркушів за композицією еталона. Точне BIM/IFC і вимір відхилення 21% потребують каліброваної геометрії.";
             }
