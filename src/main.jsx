@@ -177,7 +177,7 @@ function App() {
       const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
       const execution = Array.isArray(data.execution) ? data.execution : [];
       const wantsPdf = /pdf|пдф/i.test(text);
-      const wantsRender = files.length > 1 || /3d|bim|render|рендер|візуал|визуал|pdf|пдф/i.test(text);
+      const wantsRender = files.length > 1 || /3d|bim|render|рендер|візуал|визуал|зображ|картин|image|picture|pdf|пдф/i.test(text);
       if (wantsRender && files.length) {
         const planIndexes = photoObservations.map((item, index) =>
           /plan|план|drawing|чертёж|схема/i.test(String(item.observations?.kind || "") + " " + item.name) ? index : -1
