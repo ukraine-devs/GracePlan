@@ -62,7 +62,7 @@ function loadChats() {
 }
 function makeTitle(text) { return text.length > 28 ? `${text.slice(0, 28)}...` : text || "New chat"; }
 async function prepareImage(file) {
-  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) throw new Error("Поддерживаются только JPEG, PNG и WebP: " + file.name);
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) { if (file.name.toLowerCase().endsWith(".zip")) { throw new Error("ZIP-файл должен содержать изображения JPEG, PNG или WebP: " + file.name); } throw new Error("Поддерживаются только JPEG, PNG и WebP: " + file.name); }
   const originalBytes = await file.arrayBuffer();
   const digest = await crypto.subtle.digest("SHA-256", originalBytes);
   const originalSha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -83,7 +83,25 @@ async function prepareImage(file) {
 }
 
 
-async function makeContactSheets(photos) {
+async function extractImagesFromZip(file) {
+    const zip = new JSZip();
+    const contents = await zip.load(file);
+    const images = [];
+    for (const [relativePath, content] of Object.entries(contents)) {
+        if (content instanceof JSZip.File) {
+            const data = await content.arrayBuffer();
+            const mimeType = content.mime || "application/octet-stream";
+            if (mimeType.startsWith("image/")) {
+                const blob = new Blob([data], { type: mimeType });
+                const imgFile = new File([blob], relativePath, { type: mimeType });
+                images.push(imgFile);
+            }
+        }
+    }
+    return images;
+}
+
+function makeContactSheets(photos) {
   const sheets = [];
   for (let start = 0; start < photos.length; start += 12) {
     const canvas = document.createElement("canvas");
@@ -269,7 +287,23 @@ function App() {
     setInput(""); setError(""); setIsSending(true); setCurrentStep(files.length ? 0 : 4); setPhotoProgress(files.length ? `0/${files.length}` : ""); setExecutionOpen(true); setProgressPreviews([]);
     try {
       const photoObservations = [];
+      let expandedFiles = [];
       for (const file of files) {
+        if (file.name.toLowerCase().endsWith(".zip")) {
+          try {
+            const extracted = await extractImagesFromZip(file);
+            if (extracted.length === 0) {
+              throw new Error("ZIP-архив не содержит изображений: " + file.name);
+            }
+            expandedFiles.push(...extracted);
+          } catch (zipErr) {
+            throw new Error("Ошибка обработки ZIP-архива " + file.name + ": " + zipErr.message);
+          }
+        } else {
+          expandedFiles.push(file);
+        }
+      }
+      for (const file of expandedFiles) {
         setCurrentStep(0);
         const prepared = await prepareImage(file);
         setProgressPreviews((current) => [...current.slice(-3), { source: prepared.data, name: file.name }]);
