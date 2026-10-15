@@ -17,7 +17,7 @@ Scope:
 - Create only the Grace Plan security/BIM proposal package.
 - Match the good reference PDFs: landscape A2, two-column layout, 01 PLAN FLOOR, 02 NETWORKS AND ENGINEERING POINTS, black wall cuts, blue Cat6, ochre 230 V, pink camera fields, C/AP/D/FD/S/R/X IDs, legend, source count, materials, date and page code.
 - Required package: six A2 sheets, A3/A4 supplements, summary A4, photo atlas, IDs, engineering plans, calculations, assumptions, unresolved links, and print checks.
-- Respond only in Ukrainian, unless the user explicitly requests English; never switch to Russian because the user's request is in Russian. Launch mode always GPT Мгновенный.
+- Respond fluently in the user's language unless they request another language. Launch mode always GPT Мгновенный.
 - Never reveal reasoning. Account for every photo manifest entry. Describe clearly when only per-photo observations, rather than original pixels, were provided. Geometry comes from the 2D plan; photos only inform visible finishes, furniture, and possible identity.
 - Render only a clearly labelled conceptual 3D plan. Never claim completed BIM/IFC.
 - Maximum deviation from the reference is 21%; if exceeded, mark NONCONFORMING and do not claim success.
@@ -29,6 +29,15 @@ STATUS: current status
 OUTPUT: files or Немає
 NEXT: next command or Готово
 `;
+
+const GENERAL_CHAT_SYSTEM = `
+You are Grace AI Planner in normal conversation mode. Answer the user's actual question naturally, clearly, and beautifully in the same language as the user unless they request another language. Do not add Grace Plan commands, project statuses, file requirements, NEXT blocks, or BIM/PDF boilerplate unless the user explicitly invokes Grace or asks about plans, rooms, buildings, renders, engineering, security design, or PDF project proposals. Do not expose hidden reasoning.
+`;
+
+function detectsGraceIntent(text, fileCount) {
+  if (fileCount > 0) return true;
+  return /@grace\b|@грейс\b|\bgrace\s+plan\b|\b(new|нов(?:ый|ий))\s+(plan|план|project|проект)\b|\bпогнали\b|pdf|пдф|\b2d\b|\b3d\b|\bbim\b|рендер|render|план\s+(этажа|поверху|помещения|будинку)|комнат|кімнат|помещен|приміщен|фасад|cctv|камер|nas|nvr|кабел|схем|проектн(?:ое|а|ого)\s+предлож|смотри\s+на\s+фото|дивись\s+на\s+фото/i.test(text);
+}
 
 export const config = { runtime: "nodejs" };
 
@@ -197,6 +206,8 @@ export default async function handler(req, res) {
   try {
     const { messages, files, photoObservations } = await readJson(req);
     if (files.some((file) => !file.data || !file.type?.startsWith("image/"))) return res.status(400).json({ error: "Сейчас поддерживаются только изображения; другие файлы не анализируются." });
+    const requestText = messages.filter((message) => message.role === "user").map((message) => String(message.content || "")).join(" ").toLowerCase();
+    const graceMode = detectsGraceIntent(requestText, files.length + photoObservations.length);
     const imageParts = files
       .filter((file) => file.data && file.type && file.type.startsWith("image/"))
       .map((file) => ({ type: "image_url", image_url: { url: file.data, detail: "high" } }));
@@ -225,13 +236,13 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
-        messages: [{ role: "system", content: GRACE_PLAN_SYSTEM }, ...userMessages],
+        messages: [{ role: "system", content: graceMode ? GRACE_PLAN_SYSTEM : GENERAL_CHAT_SYSTEM }, ...userMessages],
       }),
     });
     const data = await upstream.json();
     if (!upstream.ok) return res.status(upstream.status).json({ error: data.error?.message || "OpenAI API error" });
     const answer = data.choices?.[0]?.message?.content?.trim() || "Empty API response.";
-    const requestText = messages.filter((message) => message.role === "user").map((message) => String(message.content || "")).join(" ").toLowerCase();
+    if (!graceMode) return res.status(200).json({ answer, artifacts: [], execution: [], mode: "general" });
     const wantsPdf = /pdf|пдф|6\s*[xх×]?\s*a2|шість\s+а2|шесть\s+а2|комплект\s+лист/.test(requestText);
     const artifacts = [];
     const photoManifest = photoObservations.length
