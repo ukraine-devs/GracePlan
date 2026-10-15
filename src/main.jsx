@@ -92,7 +92,7 @@ function App() {
       <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
       <div className="messages" aria-live="polite">
         {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p></article>)}
-        {isSending && <article className="message assistant progress-message"><span>Grace Plan</span>{progressSteps.map((step, index) => <p key={step} className={index < currentStep ? "progress-done" : index === currentStep ? "progress-current" : "progress-pending"}>{index < currentStep ? "✓ " : index === currentStep ? "▸ " : "○ "}{step}{index === currentStep ? "…" : ""}</p>)}</article>}
+        {isSending && <article className="message assistant progress-message"><span>Grace Plan</span><div className="live-status" key={currentStep}><i aria-hidden="true" /><p>{progressSteps[currentStep] || "Выполнение команды"}<b className="typing-dots"><em>.</em><em>.</em><em>.</em></b></p></div></article>}
       </div>
       {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">OpenAI API</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
       {error && <div className="error">{error}</div>}
