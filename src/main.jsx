@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { ChevronDown, Plus, Send, Trash2 } from "lucide-react";
 import "./styles.css";
 import { createConceptReviewPdf } from "./exportDraft.js";
+import JSZip from "jszip";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
 const ACTIVE_KEY = "grace-plan-active-chat";
@@ -120,7 +121,7 @@ function App() {
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [accept, setAccept] = useState("image/jpeg,image/png,image/webp");
+  const [accept, setAccept] = useState("image/jpeg,image/png,image/webp,.zip,application/zip");
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -152,31 +153,47 @@ function App() {
   function newChat() { const chat = createChat(); setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]); }
   function clearChat() { updateActiveChat((chat) => ({ ...chat, title: "New chat", messages: [welcome] })); setError(""); }
 
-  const handleFileChange = (e) => {
-    setFiles(Array.from(e.target.files || []));
-    setMenuOpen(false);
+  const handleFileChange = async (event) => {
+    const selected = Array.from(event.target.files || []);
+    const expanded = [];
+    setError("");
+    try {
+      for (const file of selected) {
+        if (/\\.zip$/i.test(file.name) || file.type === "application/zip") {
+          const archive = await JSZip.loadAsync(file);
+          const entries = Object.values(archive.files).filter((entry) => !entry.dir && /\\.(jpe?g|png|webp)$/i.test(entry.name));
+          if (!entries.length) throw new Error(file.name + ": ZIP не содержит JPEG, PNG или WebP.");
+          for (const entry of entries) {
+            const extension = entry.name.split(".").pop().toLowerCase();
+            const type = extension === "png" ? "image/png" : extension === "webp" ? "image/webp" : "image/jpeg";
+            const blob = await entry.async("blob");
+            expanded.push(new File([blob], entry.name.split("/").pop(), { type }));
+          }
+        } else if (["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+          expanded.push(file);
+        } else {
+          throw new Error(file.name + ": поддерживаются изображения или ZIP с изображениями.");
+        }
+      }
+      setFiles(expanded);
+    } catch (fileError) {
+      setFiles([]);
+      setError(fileError.message);
+    } finally {
+      event.target.value = "";
+      setMenuOpen(false);
+    }
   };
 
   const toggleMenu = () => {
     setMenuOpen(!menuOpen);
   };
 
-  const selectOption = (option) => {
-    switch (option) {
-      case 'photos':
-        setAccept("image/jpeg,image/png,image/webp");
-        break;
-      case 'files':
-        setAccept("");
-        break;
-      case 'zip':
-        setAccept(".zip,application/zip");
-        break;
-      default:
-        setAccept("image/jpeg,image/png,image/webp");
-    }
-    // Trigger file input click
+  const selectOption = () => {
+    const allowed = "image/jpeg,image/png,image/webp,.zip,application/zip";
+    setAccept(allowed);
     if (fileInputRef.current) {
+      fileInputRef.current.accept = allowed;
       fileInputRef.current.click();
     }
     setMenuOpen(false);
@@ -293,10 +310,8 @@ function App() {
             <Plus size={18} />
           </button>
           {menuOpen && (
-            <div className="file-menu">
-              <div onClick={() => selectOption('photos')}>фото</div>
-              <div onClick={() => selectOption('files')}>файлы</div>
-              <div onClick={() => selectOption('zip')}>zip</div>
+            <div className="file-menu" role="menu">
+              <button type="button" role="menuitem" onClick={selectOption}>Photos, files and ZIP</button>
             </div>
           )}
           <input type="file" ref={fileInputRef} multiple accept={accept} style={{display: 'none'}} onChange={handleFileChange} />
