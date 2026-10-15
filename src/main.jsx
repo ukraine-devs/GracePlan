@@ -9,6 +9,43 @@ const ACTIVE_KEY = "grace-plan-active-chat";
 const progressSteps = ["Підготовка файлів", "Аналіз кожного фото", "Перевірка 2D-плану", "Зіставлення фото", "Формування даних Grace Plan", "Концептуальний 3D-рендер", "Верстка A2 PDF"];
 const welcome = { role: "assistant", content: "Нужны фото 2D плана и +-5 фото минимум." };
 
+const ARTIFACT_DB = "grace-plan-artifacts";
+function openArtifactDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(ARTIFACT_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("files");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function persistArtifacts(messageId, artifacts) {
+  if (!artifacts.some((item) => item.data)) return artifacts;
+  const db = await openArtifactDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction("files", "readwrite");
+    const store = tx.objectStore("files");
+    artifacts.forEach((item) => item.data && store.put(item.data, messageId + ":" + item.name));
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+  return artifacts.map(({ data, ...item }) => ({ ...item, storageKey: data ? messageId + ":" + item.name : item.storageKey }));
+}
+async function hydrateArtifacts(chats) {
+  const db = await openArtifactDb();
+  const read = (key) => new Promise((resolve) => {
+    if (!key) return resolve(null);
+    const request = db.transaction("files", "readonly").objectStore("files").get(key);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => resolve(null);
+  });
+  const hydrated = await Promise.all(chats.map(async (chat) => ({ ...chat, messages: await Promise.all(chat.messages.map(async (message) => ({
+    ...message,
+    artifacts: message.artifacts ? await Promise.all(message.artifacts.map(async (artifact) => ({ ...artifact, data: artifact.data || await read(artifact.storageKey) }))) : undefined
+  }))) })));
+  db.close();
+  return hydrated;
+}
+
 function createChat() { return { id: crypto.randomUUID(), title: "New chat", messages: [welcome], createdAt: Date.now() }; }
 function normalizeMessages(messages) {
   return (Array.isArray(messages) ? messages : []).filter((message) => message.content !== "Команда уже показана. Ожидаю новые данные.");
@@ -86,6 +123,7 @@ function App() {
   const messages = activeChat?.messages || [welcome];
 
   useEffect(() => { if (!activeChatId && chats[0]) setActiveChatId(chats[0].id); }, [activeChatId, chats]);
+  useEffect(() => { let live = true; hydrateArtifacts(chats).then((value) => { if (live) setChats(value); }).catch(() => {}); return () => { live = false; }; }, []);
   useEffect(() => {
     try {
       const safeChats = chats.map((chat) => ({ ...chat, messages: chat.messages.map((message) => ({
@@ -169,7 +207,9 @@ function App() {
           finalAnswer += "\n\n3D: нужен ровно один распознанный 2D-план и фотографии одного этажа.";
         }
       }
-      updateActiveChat((chat) => ({ ...chat, messages: [...nextMessages, { role: "assistant", content: finalAnswer, artifacts, execution }] }));
+      const messageId = crypto.randomUUID();
+      const persistedArtifacts = await persistArtifacts(messageId, artifacts);
+      updateActiveChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: finalAnswer, artifacts: persistedArtifacts, execution }] }));
       setFiles([]);
     } catch (err) {
       setError(err.message);
