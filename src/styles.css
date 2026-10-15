@@ -327,6 +327,7 @@ button, textarea, input { font: inherit; }
 }
 
 .file-row {
+  position: relative;
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
@@ -448,3 +449,19 @@ textarea::placeholder { color: #8a8a8a; }
 .command-row.done_with_assumptions { border-left: 3px solid #2f8f64; }
 .command-row.needs_input { border-left: 3px solid #d39a36; }
 .command-row.failed { border-left: 3px solid #bf5353; }
+
+.file-button {
+  width: 42px;
+  min-height: 42px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: #111;
+  font-size: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.file-button:hover { background: #f2f2f2; color: #111; }

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { ChevronDown, Plus, Send, Trash2 } from "lucide-react";
 import "./styles.css";
@@ -119,6 +119,11 @@ function App() {
   const [executionOpen, setExecutionOpen] = useState(false);
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [accept, setAccept] = useState("image/jpeg,image/png,image/webp");
+  const containerRef = useRef(null);
+  const fileInputRef = useRef(null);
+
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) || chats[0], [activeChatId, chats]);
   const messages = activeChat?.messages || [welcome];
 
@@ -134,9 +139,48 @@ function App() {
   }, [chats]);
   useEffect(() => { if (activeChat?.id) localStorage.setItem(ACTIVE_KEY, activeChat.id); }, [activeChat?.id]);
   useEffect(() => { const timer = window.setTimeout(() => setShowStatus(false), 5500); return () => window.clearTimeout(timer); }, []);
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
   function updateActiveChat(updater) { setChats((current) => current.map((chat) => (chat.id === activeChat.id ? updater(chat) : chat))); }
   function newChat() { const chat = createChat(); setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]); }
   function clearChat() { updateActiveChat((chat) => ({ ...chat, title: "New chat", messages: [welcome] })); setError(""); }
+
+  const handleFileChange = (e) => {
+    setFiles(Array.from(e.target.files || []));
+    setMenuOpen(false);
+  };
+
+  const toggleMenu = () => {
+    setMenuOpen(!menuOpen);
+  };
+
+  const selectOption = (option) => {
+    switch (option) {
+      case 'photos':
+        setAccept("image/jpeg,image/png,image/webp");
+        break;
+      case 'files':
+        setAccept("");
+        break;
+      case 'zip':
+        setAccept(".zip,application/zip");
+        break;
+      default:
+        setAccept("image/jpeg,image/png,image/webp");
+    }
+    // Trigger file input click
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+    setMenuOpen(false);
+  };
 
   async function submit(event) {
     event.preventDefault();
@@ -242,7 +286,23 @@ function App() {
       </div>
       {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">OpenAI API</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
       {error && <div className="error">{error}</div>}
-      <form className="composer" onSubmit={submit}><label className="file-row"><span>Project files</span><input type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(event) => setFiles(Array.from(event.target.files || []))} /></label><label className="prompt-box"><span>Message</span><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="Example: create the Grace Plan PDF package from all plans and photos..." rows={4} /></label><button type="submit" disabled={isSending || (!input.trim() && !files.length)}>Send<Send size={18} /></button></form>
+      <form className="composer" onSubmit={submit}>
+        <label className="file-row" ref={containerRef}>
+          <button type="button" className="file-button" onClick={toggleMenu} aria-label="Выберите файлы" title="Выберите файлы">
+            <Plus size={18} />
+          </button>
+          {menuOpen && (
+            <div className="file-menu">
+              <div onClick={() => selectOption('photos')}>фото</div>
+              <div onClick={() => selectOption('files')}>файлы</div>
+              <div onClick={() => selectOption('zip')}>zip</div>
+            </div>
+          )}
+          <input type="file" ref={fileInputRef} multiple accept={accept} style={{display: 'none'}} onChange={handleFileChange} />
+        </label>
+        <label className="prompt-box"><span>Message</span><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="Example: create the Grace Plan PDF package from all plans and photos..." rows={4} /></label>
+        <button type="submit" disabled={isSending || (!input.trim() && !files.length)}>Send<Send size={18} /></button>
+      </form>
     </section></main>
   );
 }
