@@ -302,6 +302,14 @@ function App() {
     return { type: "json", name, data: "data:application/json;base64," + btoa(Array.from(new TextEncoder().encode(JSON.stringify(value, null, 2)), (byte) => String.fromCharCode(byte)).join("")) };
   }
 
+  function storedJson(artifacts, name, fallback) {
+    try {
+      const data = artifacts.find((item) => item.name === name)?.data;
+      if (!data?.startsWith("data:application/json;base64,")) return fallback;
+      return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(data.split(",")[1]), (char) => char.charCodeAt(0))));
+    } catch { return fallback; }
+  }
+
   async function submit(event) {
     event.preventDefault();
     const text = input.trim();
@@ -358,7 +366,7 @@ function App() {
           photoObservations, previousMode: activeChat.lastMode || "general", clientPipeline: true
         });
       } catch (chatError) {
-        if (decision.mode !== "grace" || !submittedFiles.length) throw chatError;
+        if (decision.mode !== "grace" || (!submittedFiles.length && !activeChat.messages.some((message) => message.artifacts?.some((artifact) => artifact.kind === "source_plan")))) throw chatError;
         data = { answer: "", mode: "grace", artifacts: [], execution: [] };
         stage("reply", "Text reply unavailable; continuing the proposal from source images", "failed");
       }
@@ -370,12 +378,17 @@ function App() {
       const wantsPdf = projectMode && (/pdf|пдф|proposal|предлож|пропоз|@grace|погнали|новий проект|новый проект/i.test(text) || submittedFiles.length > 1);
       const wantsRender = projectMode && (wantsPdf || submittedFiles.length > 1 || /3d|bim|render|рендер|візуал|визуал/i.test(text));
       const planIndexes = photoObservations.map((item, index) => isPlanObservation(item) ? index : -1).filter((index) => index >= 0);
-      const previousArtifacts = [...messages].reverse().flatMap((message) => message.artifacts || []);
+      const previousProjectMessage = [...messages].reverse().find((message) => message.artifacts?.some((item) => item.kind === "source_plan"));
+      const previousArtifacts = previousProjectMessage?.artifacts || [];
+      if (!submittedFiles.length && projectMode) artifacts.push(...previousArtifacts.filter((item) => item.type !== "pdf"));
+      const previousProject = submittedFiles.length ? {} : storedJson(previousArtifacts, "GracePlan_project.json", {});
+      const previousObservations = submittedFiles.length ? [] : storedJson(previousArtifacts, "GracePlan_image_observations.json", []);
+      if (photoObservations.length) artifacts.push(jsonArtifact("GracePlan_image_observations.json", photoObservations));
       let planData = previousArtifacts.find((item) => item.kind === "source_plan")?.data;
       let renderData = previousArtifacts.find((item) => item.kind === "concept_render" || item.name === "GracePlan_concept_3D.png")?.data;
       let contactSheets = previousArtifacts.filter((item) => item.kind === "contact_sheet").map((item) => item.data);
       let photoCount = submittedFiles.length ? submittedFiles.length - planIndexes.length : previousArtifacts.find((item) => item.kind === "source_plan")?.photoCount || 0;
-      let renderQa = null;
+      let renderQa = submittedFiles.length ? null : storedJson(previousArtifacts, "GracePlan_render_review.json", null);
       let renderFailure = "";
       if (projectMode && planIndexes.length === 1) {
         const planIndex = planIndexes[0];
@@ -397,45 +410,49 @@ function App() {
         const photos = submittedFiles.filter((_, index) => index !== planIndex);
         contactSheets = await makeContactSheets(photos);
         contactSheets.forEach((source, index) => artifacts.push({ type: "image", kind: "contact_sheet", name: "GracePlan_contact_sheet_" + (index + 1) + ".jpg", data: source }));
-        if (wantsRender && photos.length) {
-          setCurrentStep(5); stage("render", "Creating conceptual 3D render");
-          setProgressPreviews(contactSheets.map((source, index) => ({ source, name: "Reference contact sheet " + (index + 1) })));
-          try {
-            const plan = preparedImages[planIndex].data;
-            const result = await requestJson("/api/render-concept", { plan, contactSheets, photoCount, request: text });
-            renderData = result.artifact.data;
-            artifacts.push({ ...result.artifact, kind: "concept_render" });
-            setProgressPreviews([{ source: renderData, name: "Generated concept - awaiting review" }]);
-            stage("render", "Conceptual render created", "done");
-            stage("render-qa", "Comparing render against source plan");
-            try {
-              const qa = await requestJson("/api/verify-render", { plan, render: renderData });
-              renderQa = qa;
-              artifacts.push(jsonArtifact("GracePlan_render_review.json", qa));
-              stage("render-qa", qa.status === "mismatch_detected" ? "Differences detected - review required" : "Visual comparison complete - manual review required", "done");
-            } catch (qaError) {
-              renderQa = { status: "review_unavailable", error: qaError.message, guaranteed: false };
-              artifacts.push(jsonArtifact("GracePlan_render_review.json", renderQa));
-              stage("render-qa", "Comparison unavailable; render is unverified", "failed");
-            }
-          } catch (renderError) {
-            renderFailure = renderError.message;
-            stage("render", "Render failed: " + renderError.message, "failed");
-            setError(renderError.message);
-          }
-        }
+
       } else if (projectMode && submittedFiles.length && planIndexes.length !== 1) {
         planData = null; renderData = null; contactSheets = [];
         stage("source", "Exactly one recognized floor plan is required", "failed");
       }
+      if (wantsRender && planData && !renderData && contactSheets.length) {
+        setCurrentStep(5); stage("render", "Creating conceptual 3D render");
+        setProgressPreviews(contactSheets.map((source, index) => ({ source, name: "Reference contact sheet " + (index + 1) })));
+        try {
+          const currentPlan = preparedImages[planIndexes[0]];
+          const plan = currentPlan?.data || (await prepareImage(new File([await (await fetch(planData)).blob()], "saved-source-plan.png", { type: planData.slice(5, planData.indexOf(";")) }))).data;
+          const result = await requestJson("/api/render-concept", { plan, contactSheets, photoCount, request: text });
+          renderData = result.artifact.data;
+          artifacts.push({ ...result.artifact, kind: "concept_render" });
+          setProgressPreviews([{ source: renderData, name: "Generated concept - awaiting review" }]);
+          stage("render", "Conceptual render created", "done");
+          stage("render-qa", "Comparing render against source plan");
+          try {
+            const qa = await requestJson("/api/verify-render", { plan, render: renderData });
+            renderQa = qa;
+            artifacts.push(jsonArtifact("GracePlan_render_review.json", qa));
+            stage("render-qa", qa.status === "mismatch_detected" ? "Differences detected - review required" : "Visual comparison complete - manual review required", "done");
+          } catch (qaError) {
+            renderQa = { status: "review_unavailable", error: qaError.message, guaranteed: false };
+            artifacts.push(jsonArtifact("GracePlan_render_review.json", renderQa));
+            stage("render-qa", "Comparison unavailable; render is unverified", "failed");
+          }
+        } catch (renderError) {
+          renderFailure = renderError.message;
+          stage("render", "Render failed: " + renderError.message, "failed");
+          setError(renderError.message);
+        }
+      }
       if (wantsPdf && planData && renderData) {
         setCurrentStep(6); stage("pdf", "Composing A2 PDF from preserved source");
         try {
-          const photoEvidence = userArtifacts.filter((_, index) => !planIndexes.includes(index));
+          const previousSourceName = storedJson(previousArtifacts, "GracePlan_plan_fidelity.json", {}).source_name;
+          const priorUpload = previousSourceName && [...messages].reverse().find((message) => message.role === "user" && message.artifacts?.some((item) => item.name === previousSourceName));
+          const photoEvidence = submittedFiles.length ? userArtifacts.filter((_, index) => !planIndexes.includes(index)) : (priorUpload?.artifacts || []).filter((item) => item.type === "image" && item.name !== previousSourceName);
           const { createConceptReviewPdf } = await import("./proposalPdf.js");
           const pdfUrl = await createConceptReviewPdf({ renderData, planData, photoCount, contactSheets, renderQa,
-            project: data.projectData || {}, observations: photoObservations, photos: photoEvidence,
-            sourceChecks: photoObservations.map((photo) => ({ name: photo.name, sha256: photo.originalSha256 })),
+            project: data.projectData || previousProject, observations: photoObservations.length ? photoObservations : previousObservations, photos: photoEvidence,
+            sourceChecks: (photoObservations.length ? photoObservations : previousObservations).map((photo) => ({ name: photo.name, sha256: photo.originalSha256 })),
             onProgress: (label) => stage("pdf", label)
           });
           const number = String(messages.flatMap((message) => message.artifacts || []).filter((item) => item.type === "pdf").length + 1).padStart(3, "0");
