@@ -165,7 +165,7 @@ async function createConceptRender(files, answer, apiKey) {
     method: "POST",
     headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
+      model: process.env.OPENAI_RENDER_AGENT_MODEL || "gpt-4o-mini",
       input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...images] }],
       tools: [{ type: "image_generation", model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst", size: "1536x1024", quality: "high", action: "generate" }],
       tool_choice: { type: "image_generation" }
@@ -174,7 +174,8 @@ async function createConceptRender(files, answer, apiKey) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error?.message || "Image generation failed");
   const call = data.output?.find((item) => item.type === "image_generation_call" && item.result);
-  return call?.result ? "data:image/png;base64," + call.result : null;
+  if (!call?.result) throw new Error("Image generation tool returned no image");
+  return "data:image/png;base64," + call.result;
 }
 
 async function readJson(req) {
