@@ -231,7 +231,7 @@ export default async function handler(req, res) {
     if (!upstream.ok) return res.status(upstream.status).json({ error: data.error?.message || "OpenAI API error" });
     const answer = data.choices?.[0]?.message?.content?.trim() || "Empty API response.";
     const requestText = messages.filter((message) => message.role === "user").map((message) => String(message.content || "")).join(" ").toLowerCase();
-    const wantsPdf = /pdf|пдф|grace plan|проектн/.test(requestText);
+    const wantsPdf = /pdf|пдф|6\s*[xх×]?\s*a2|шість\s+а2|шесть\s+а2|комплект\s+лист/.test(requestText);
     const artifacts = [];
     const photoManifest = photoObservations.length
       ? photoObservations.map((photo, index) => ({
@@ -265,12 +265,12 @@ export default async function handler(req, res) {
       } catch (error) { renderError = error.message; }
     }
     const blockers = [];
-    if (wantsPdf) blockers.push("PDF: не сформирован — нужны проверенная геометрия, связь фото с помещениями и верстка эталонных листов.");
-    if (renderError) blockers.push("3D-рендер: ошибка — " + renderError);
-    if (photoObservations.length && wantsRender && !imageParts.length) blockers.push("3D-рендер: оригиналы не сохранены; анализ фото выполнен, но пакетный рендер ещё недоступен.");
-    if (files.length > 16) blockers.push("3D-рендер: генератор получил только первые 16 изображений; остальные внесены в реестр, но не включены в генерацию.");
-    if (photoObservations.length) blockers.push("Фото: " + photoObservations.length + " снимков проанализированы отдельно; привязка к помещениям не подтверждена.");
-    if (files.length > 20) blockers.push("Анализ помещений: обработаны только первые 20 изображений. Остальные находятся в реестре без визуальной проверки.");
+    if (wantsPdf) blockers.push("PDF: не сформовано — потрібні перевірена геометрія, прив’язка фото до приміщень і верстка еталонних аркушів.");
+    if (renderError) blockers.push("3D-рендер: помилка — " + renderError);
+    if (photoObservations.length && wantsRender && !imageParts.length) blockers.push("3D-рендер: оригінали не збережені; аналіз фото виконано, пакетний рендер поки недоступний.");
+    if (files.length > 16) blockers.push("3D-рендер: генератор отримав перші 16 зображень; решту внесено до реєстру без включення в генерацію.");
+    if (photoObservations.length) blockers.push("Фото: " + photoObservations.length + " знімків проаналізовано окремо; прив’язку до приміщень не підтверджено.");
+    if (files.length > 20) blockers.push("Аналіз приміщень: оброблено перші 20 зображень. Решта перебуває в реєстрі без візуальної перевірки.");
     if ((files.length || photoObservations.length) && !projectData) blockers.push("Структуровані дані: " + (projectError || "витяг не виконано."));
     const correctedAnswer = !files.length && !photoObservations.length && /NEXT:\s*Готово/i.test(answer)
       ? answer.replace(/NEXT:\s*Готово/i, "NEXT: Завантажте 2D-план і щонайменше п’ять фото приміщень.")
