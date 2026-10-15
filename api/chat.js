@@ -1,3 +1,4 @@
+import { WORKFLOW_CATALOG } from "./workflowCatalog.js";
 import { createHash } from "node:crypto";
 const GRACE_PLAN_SYSTEM = `
 GOAL:
@@ -281,7 +282,21 @@ export default async function handler(req, res) {
       { id: "CMD-003", label: "Зіставлення фото з приміщеннями", status: photoObservations.length >= 5 ? "done_with_assumptions" : "needs_input", detail: photoObservations.length + " фото проаналізовано; зв’язки з кімнатами потребують підтвердження" },
       { id: "CMD-004", label: "Структуровані дані Grace Plan", status: projectData ? "done_with_assumptions" : "failed", detail: projectData ? "JSON, кабельний журнал і топологію сформовано" : (projectError || "Дані не сформовано") }
     ];
-    return res.status(200).json({ answer: finalAnswer, artifacts, execution });
+    const workflowStatus = WORKFLOW_CATALOG.map((command) => {
+      let status = "needs_input";
+      let detail = "Очікує завершення попередніх команд";
+      if (command.id === "CMD-001") { status = "done_verified"; detail = "Завдання Grace Plan зафіксовано"; }
+      if (command.id === "CMD-002" && (files.length || photoObservations.length)) { status = "done_verified"; detail = "Вхідні файли знайдено"; }
+      if (["CMD-005","CMD-007"].includes(command.id) && photoObservations.length) { status = "done_verified"; detail = photoObservations.length + " зображень враховано й проаналізовано"; }
+      if (command.id === "CMD-010" && planCount === 1) { status = "done_with_assumptions"; detail = "Один 2D-план розпізнано; масштаб не підтверджено"; }
+      if (command.id === "CMD-011") { status = "done_verified"; detail = "Еталонний формат Grace Plan завантажено в правила агента"; }
+      if (command.id === "CMD-014" && photoObservations.length >= 5) { status = "done_with_assumptions"; detail = "Автоматичне зіставлення потребує підтвердження користувача"; }
+      if (command.id === "CMD-019") { status = "not_implemented"; detail = "Точний BIM потребує масштабу й перевіреної векторної геометрії"; }
+      if (command.id === "CMD-021" && planCount === 1 && photoObservations.length >= 5) { status = "done_with_assumptions"; detail = "Входи концептуального рендера підготовлено"; }
+      return { ...command, status, detail };
+    });
+    artifacts.push({ type: "json", name: "GracePlan_67_command_status.json", data: dataUrl("application/json", JSON.stringify(workflowStatus, null, 2)) });
+    return res.status(200).json({ answer: finalAnswer, artifacts, execution, workflowStatus });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Server error" });
   }
