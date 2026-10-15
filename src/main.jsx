@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Check, ChevronDown, Plus, Send, Trash2 } from "lucide-react";
+import { ChevronDown, Plus, Send, Trash2 } from "lucide-react";
 import "./styles.css";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
 const ACTIVE_KEY = "grace-plan-active-chat";
-const progressSteps = ["Загрузка файлов", "Проверка 2D-плана", "Сопоставление фото", "Построение 3D-плана", "Формирование Grace Plan"];
+const progressSteps = ["Чтение файлов", "Обработка запроса на сервере"];
 const welcome = { role: "assistant", content: "Нужны фото 2D плана и +-5 фото минимум." };
 
 function createChat() { return { id: crypto.randomUUID(), title: "New chat", messages: [welcome], createdAt: Date.now() }; }
@@ -56,12 +56,14 @@ function App() {
     event.preventDefault();
     const text = input.trim();
     if ((!text && !files.length) || isSending) return;
+    const bytes = files.reduce((sum, file) => sum + file.size, 0);
+    if (bytes > 3_000_000) { setError("Файлы превышают лимит текущего запроса (3 МБ). Нужна серверная загрузка для больших наборов."); return; }
     const nextMessages = [...messages, { role: "user", content: text || "Проаналізуйте прикріплені файли." }];
     updateActiveChat((chat) => ({ ...chat, title: chat.messages.length === 1 ? makeTitle(text || files[0].name) : chat.title, messages: nextMessages }));
     setInput(""); setError(""); setIsSending(true); setCurrentStep(0); setExecutionOpen(false);
-    const timer = window.setInterval(() => setCurrentStep((step) => Math.min(step + 1, progressSteps.length - 1)), 1200);
     try {
       const filePayload = await Promise.all(files.map(readFile));
+      setCurrentStep(1);
       const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextMessages, files: filePayload }) });
       const raw = await response.text();
       let data;
@@ -81,7 +83,7 @@ function App() {
       setError(err.message);
       updateActiveChat((chat) => ({ ...chat, messages }));
     } finally {
-      window.clearInterval(timer); setCurrentStep(-1); setIsSending(false);
+      setCurrentStep(-1); setIsSending(false);
     }
   }
 
@@ -101,7 +103,7 @@ function App() {
               <ChevronDown className="spoiler-chevron" size={16} aria-hidden="true" />
             </button>
             <div className="execution-details" aria-hidden={!executionOpen}><div>
-              {progressSteps.slice(0, currentStep + 1).map((step, index) => <p className={index === currentStep ? "active" : "done"} key={step}>{index === currentStep ? <i className="mini-spinner" aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}<span>{step}</span></p>)}
+              {progressSteps.slice(0, currentStep + 1).map((step, index) => <p className={index === currentStep ? "active" : "done"} key={step}>{index === currentStep ? <i className="mini-spinner" aria-hidden="true" /> : <span aria-hidden="true">✓</span>}<span>{step}</span></p>)}
             </div></div>
           </div>
         </article>}
