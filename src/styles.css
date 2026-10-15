@@ -329,7 +329,7 @@ button, textarea, input { font: inherit; }
 .file-row {
   position: relative;
   grid-column: 1 / -1;
-  padding-top: 80px;
+  padding-bottom: 80px;
   display: flex;
   align-items: flex-end;
   gap: 10px;
@@ -469,10 +469,10 @@ textarea::placeholder { color: #8a8a8a; }
 
 .file-menu {
   position: absolute;
-  bottom: 100%;
+  top: 100%;
   left: 0;
   right: 0;
-  margin-bottom: 4px;
+  margin-top: 4px;
   width: 100%;
   display: flex;
   flex-wrap: nowrap;
