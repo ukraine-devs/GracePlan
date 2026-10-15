@@ -69,7 +69,7 @@ function createPhotoManifest(files) {
   });
 }
 
-async function createProjectData(files, answer, apiKey) {
+async function createProjectData(files, photoObservations, answer, apiKey) {
   const imageContent = files.filter((file) => file.data && file.type?.startsWith("image/")).slice(0, 20)
     .map((file) => ({ type: "image_url", image_url: { url: file.data, detail: "high" } }));
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -108,7 +108,7 @@ async function createProjectData(files, answer, apiKey) {
         }
       },
       messages: [{ role: "system", content: "Extract editable Grace Plan project data. Never invent measured lengths or power values; use null/0 and unresolved when evidence is absent. IDs must be stable." },
-        { role: "user", content: [{ type: "text", text: "Files: " + files.map((file) => file.name).join(", ") + "\nAnalysis:\n" + answer }, ...imageContent] }]
+        { role: "user", content: [{ type: "text", text: "Files: " + (files.map((file) => file.name).join(", ") || photoObservations.map((photo) => photo.name).join(", ")) + "\nPer-image observations:\n" + photoObservations.map((photo, index) => "PHOTO-" + String(index + 1).padStart(3, "0") + " " + photo.name + ": " + JSON.stringify(photo.observations || {})).join("\n").slice(0, 60000) + "\nAnalysis:\n" + answer }, ...imageContent] }]
     })
   });
   const data = await response.json();
@@ -247,9 +247,9 @@ export default async function handler(req, res) {
     if (photoManifest.length) artifacts.push({ type: "json", name: "GracePlan_photo_manifest.json", data: dataUrl("application/json", JSON.stringify(photoManifest, null, 2)) });
     let projectData = null;
     let projectError = "";
-    if (files.length) {
+    if (files.length || photoObservations.length) {
       try {
-        projectData = await createProjectData(files, answer, process.env.OPENAI_API_KEY);
+        projectData = await createProjectData(files, photoObservations, answer, process.env.OPENAI_API_KEY);
         artifacts.push({ type: "json", name: "GracePlan_project.json", data: dataUrl("application/json", JSON.stringify(projectData, null, 2)) });
         artifacts.push({ type: "csv", name: "GracePlan_cable_schedule.csv", data: dataUrl("text/csv", createCableCsv(projectData)) });
         artifacts.push({ type: "svg", name: "GracePlan_network_topology.svg", data: dataUrl("image/svg+xml", createEngineeringSvg(projectData)) });
@@ -271,7 +271,7 @@ export default async function handler(req, res) {
     if (files.length > 16) blockers.push("3D-рендер: генератор получил только первые 16 изображений; остальные внесены в реестр, но не включены в генерацию.");
     if (photoObservations.length) blockers.push("Фото: " + photoObservations.length + " снимков проанализированы отдельно; привязка к помещениям не подтверждена.");
     if (files.length > 20) blockers.push("Анализ помещений: обработаны только первые 20 изображений. Остальные находятся в реестре без визуальной проверки.");
-    if (files.length && !projectData) blockers.push("Структурированные данные: " + (projectError || "извлечение не выполнено."));
+    if ((files.length || photoObservations.length) && !projectData) blockers.push("Структуровані дані: " + (projectError || "витяг не виконано."));
     const correctedAnswer = !files.length && !photoObservations.length && /NEXT:\s*Готово/i.test(answer)
       ? answer.replace(/NEXT:\s*Готово/i, "NEXT: Завантажте 2D-план і щонайменше п’ять фото приміщень.")
       : answer;
