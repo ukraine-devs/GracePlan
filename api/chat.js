@@ -76,7 +76,7 @@ async function createProjectData(files, photoObservations, answer, apiKey) {
     method: "POST",
     headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
       temperature: 0,
       response_format: {
         type: "json_schema",
@@ -165,7 +165,7 @@ async function createConceptRender(files, answer, apiKey) {
     method: "POST",
     headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
       input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...images] }],
       tools: [{ type: "image_generation", model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst", size: "1536x1024", quality: "high", action: "generate" }],
       tool_choice: { type: "image_generation" }
@@ -222,7 +222,7 @@ export default async function handler(req, res) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
         messages: [{ role: "system", content: GRACE_PLAN_SYSTEM }, ...userMessages],
         temperature: 0.1,
       }),
