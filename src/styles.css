@@ -329,8 +329,9 @@ button, textarea, input { font: inherit; }
 .file-row {
   position: relative;
   grid-column: 1 / -1;
+  padding-top: 80px;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
   min-width: 0;
   color: #6a6a6a;
@@ -456,12 +457,42 @@ textarea::placeholder { color: #8a8a8a; }
   padding: 0;
   border: 0;
   border-radius: 50%;
-  color: #fff;
-  background: #111;
+  color: #333;
+  background: #f0f0f0;
   font-size: 0;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
-.file-button:hover { background: #f2f2f2; color: #111; }
+.file-button:hover { background: #e0e0e0; color: #111; }
+
+.file-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: 4px;
+  width: 100%;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 8px 0;
+  background: white;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.15);
+  z-index: 1000;
+}
+.file-menu div {
+  padding: 8px 14px;
+  cursor: pointer;
+  color: #5f5f5f;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.file-menu div:hover {
+  background: #f2f2f2;
+  color: #111;
+}
+
