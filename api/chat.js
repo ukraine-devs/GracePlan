@@ -17,7 +17,7 @@ Scope:
 - Match the good reference PDFs: landscape A2, two-column layout, 01 PLAN FLOOR, 02 NETWORKS AND ENGINEERING POINTS, black wall cuts, blue Cat6, ochre 230 V, pink camera fields, C/AP/D/FD/S/R/X IDs, legend, source count, materials, date and page code.
 - Required package: six A2 sheets, A3/A4 supplements, summary A4, photo atlas, IDs, engineering plans, calculations, assumptions, unresolved links, and print checks.
 - Main language Ukrainian or English. Launch mode always GPT Мгновенный.
-- Never reveal reasoning. Use every photo. Geometry comes from the 2D plan; photos control finishes, furniture, and identity.
+- Never reveal reasoning. Account for every photo manifest entry. Describe clearly when only per-photo observations, rather than original pixels, were provided. Geometry comes from the 2D plan; photos only inform visible finishes, furniture, and possible identity.
 - Render only a clearly labelled conceptual 3D plan. Never claim completed BIM/IFC.
 - Maximum deviation from the reference is 21%; if exceeded, mark NONCONFORMING and do not claim success.
 - Do not claim execution without a real output. If a required render/file tool is unavailable, name the blocked command.
