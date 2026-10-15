@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import { ACCEPT_FILES, expandUploads, readFileDataUrl } from "./uploads.js";
 import { routeIntent, isPlanObservation } from "../lib/graceIntent.js";
 import { createExecutionLog } from "../lib/executionLog.js";
+import { browserBridgeStatus, sendToBrowserChat } from "./browserBridge.js";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
 const ACTIVE_KEY = "grace-plan-active-chat";
@@ -145,6 +146,10 @@ function App() {
   const [graceSession, setGraceSession] = useState(false);
   const [runLog, setRunLog] = useState([]);
   const [isPreparingFiles, setIsPreparingFiles] = useState(false);
+  const [connectionMode, setConnectionMode] = useState(() => localStorage.getItem("grace-connection-mode-v2") || "chatgpt");
+  const [bridgeStatus, setBridgeStatus] = useState({installed:false,paired:false});
+  const [bridgeHelp, setBridgeHelp] = useState(false);
+  const [browserReply, setBrowserReply] = useState("");
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -156,6 +161,13 @@ function App() {
 
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) || chats[0], [activeChatId, chats]);
   const messages = activeChat?.messages || [welcome];
+  useEffect(() => {localStorage.setItem("grace-connection-mode-v2",connectionMode);},[connectionMode]);
+  useEffect(() => {
+    let live=true;
+    const refresh=()=>browserBridgeStatus(activeChat.id,activeChat.title).then(status=>{if(live)setBridgeStatus(status);});
+    refresh();window.addEventListener("focus",refresh);
+    return ()=>{live=false;window.removeEventListener("focus",refresh);};
+  },[activeChat.id,activeChat.title,bridgeHelp]);
   const attachmentPreviews = useMemo(() => files.map((file) => ({ file, url: URL.createObjectURL(file) })), [files]);
   const agentState = isPreparingFiles ? "reading" : !isSending ? "idle" : currentStep <= 1 ? "reading" : currentStep <= 3 ? "command" : currentStep === 4 ? activityTone : currentStep === 5 ? "command" : "writing";
 
@@ -310,7 +322,38 @@ function App() {
     } catch { return fallback; }
   }
 
-  async function submit(event) {
+  async function submitBrowser(event) {
+    event.preventDefault();
+    const text=input.trim(),submitted=[...files];
+    if((!text&&!submitted.length)||isSending||isPreparingFiles)return;
+    const status=bridgeStatus;
+    if(!status.paired){setBridgeHelp(true);setError("Pair this chat with your signed-in ChatGPT tab. No API request was made.");return;}
+    const chatId=activeChat.id,userId=crypto.randomUUID(),answerId=crypto.randomUUID();
+    const writeChat=(updater)=>setChats(current=>current.map(chat=>chat.id===chatId?updater(chat):chat));
+    const next=[...messages,{id:userId,role:"user",content:text||"Review all attached images and create the final proposal PDF."}];
+    writeChat(chat=>({...chat,title:chat.messages.length===1?makeTitle(text||submitted[0]?.name):chat.title,messages:next}));
+    setFiles([]);setInput("");setError("");setIsSending(true);setGraceSession(true);setExecutionOpen(true);setRunLog([]);setBrowserReply("");setCurrentStep(0);
+    const log=createExecutionLog(setRunLog);let chatUrl=status.chatUrl,activeStage=null;
+    try{
+      const previews=[];
+      for(const file of submitted){const prepared=await prepareImage(file);previews.push({type:"image",name:file.relativePath||file.name,data:prepared.data});}
+      if(previews.length){next[next.length-1].artifacts=await persistArtifacts(userId,previews);writeChat(chat=>({...chat,messages:[...next]}));}
+      log.stage("browser","Sending through your ChatGPT browser session");
+      const result=await sendToBrowserChat({chatId,text:text||"Use every attached image and create the final Grace Plan PDF. Do not substitute intermediate JSON/CSV/SVG files for the final PDF.",files:submitted,onEvent:event=>{
+        if(event.chatUrl)chatUrl=event.chatUrl;
+        if(event.kind==="text")setBrowserReply(event.text);
+        if(event.kind==="stage"){if(activeStage&&activeStage.id!==event.stage)log.stage(activeStage.id,activeStage.label,"done");setCurrentStep(event.stage==="upload"?0:4);log.stage(event.stage,event.label);activeStage={id:event.stage,label:event.label};}
+      }});
+      log.stage("browser","ChatGPT response received","done");
+      if(activeStage)log.stage(activeStage.id,activeStage.label,"done");
+      const saved=await persistArtifacts(answerId,result.artifacts||[]);
+      const content=result.text+(result.pdfAvailableInChatGPT?"\n\nChatGPT returned a PDF link; its file transfer could not be verified. Open the original conversation.":"");
+      writeChat(chat=>({...chat,chatgptUrl:chatUrl,messages:[...next,{id:answerId,role:"assistant",content,artifacts:saved,execution:log.snapshot(),chatgptUrl:chatUrl}]}));
+    }catch(error){if(activeStage)log.stage(activeStage.id,activeStage.label,"failed");log.stage("browser",error.message,"failed");setError(error.message);writeChat(chat=>({...chat,chatgptUrl:chatUrl,messages:[...next,{id:answerId,role:"assistant",content:error.message,execution:log.snapshot(),chatgptUrl:chatUrl}]}));}
+    finally{setIsSending(false);setCurrentStep(-1);setBrowserReply("");}
+  }
+  async function submit(event) {if(connectionMode==="chatgpt")return submitBrowser(event);return submitApi(event);}
+  async function submitApi(event) {
     event.preventDefault();
     const text = input.trim();
     if ((!text && !files.length) || isSending || isPreparingFiles) return;
@@ -486,6 +529,7 @@ function App() {
         <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
         <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><span className={`agent-indicator ${agentState}`} role="status" aria-label={`Agent status: ${agentState}`} title={`Activity: ${agentState}. Animated UI indicator, not hidden model reasoning.`} /></div>
       </header>
+      <div className="connection-row"><label>Connection <select aria-label="Connection mode" value={connectionMode} disabled={isSending} onChange={event=>setConnectionMode(event.target.value)}><option value="chatgpt">ChatGPT browser</option><option value="api">OpenAI API (separate billing)</option></select></label>{connectionMode==="chatgpt"&&<button type="button" onClick={()=>setBridgeHelp(true)}>{bridgeStatus.paired?"ChatGPT connected":"Connect ChatGPT"}</button>}{activeChat.chatgptUrl&&<a href={activeChat.chatgptUrl} target="_blank" rel="noopener noreferrer">Open same chat ↗</a>}</div>
       <div className="messages" aria-live="polite" ref={messagesRef}>
         {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Grace AI Planner"}</span><MessageText text={message.content} />{message.execution?.length > 0 && <details className="command-log" open><summary>Execution commands</summary>{message.execution.map((item) => <div className={`command-row ${item.status}`} key={item.id}><strong>· {item.label}</strong><span>{item.detail}</span></div>)}</details>}{message.artifacts?.filter((artifact) => message.role === "user" || artifact.type === "pdf").map((artifact) => artifact.data ? artifact.type === "image" ? <button className="preview-card" type="button" onClick={() => openPreview(artifact.data, artifact.name)} key={artifact.name}><img src={artifact.data} alt={artifact.name} /><span>{artifact.name}</span></button> : <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}><Download size={16} aria-hidden="true" />{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл недоступний</span>)}</article>)}
         {isSending && <article className="message assistant progress-message"><span>Grace AI Planner</span>
@@ -499,12 +543,14 @@ function App() {
               {runLog.map((step) => <p className={step.status === "running" ? "active" : step.status} key={step.id}>{step.status === "running" ? <i className="mini-spinner" aria-hidden="true" /> : <span aria-hidden="true">{step.status === "failed" ? "!" : "✓"}</span>}<span>{step.label}</span></p>)}
             </div></div>}
           </div>
+          {browserReply && <MessageText text={browserReply} />}
           {graceSession && progressPreviews.length > 0 && <div className="progress-previews">{progressPreviews.map((preview, index) => <button type="button" className="progress-preview" onClick={() => openPreview(preview.source, preview.name)} key={preview.name + index}><img src={preview.source} alt={preview.name} /><span>{preview.name}</span></button>)}</div>}
         </article>}
       </div>
       {chatManagerOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => setChatManagerOpen(false)}><section className="chat-manager-modal" role="dialog" aria-modal="true" aria-label="All chats" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>All chats</strong><span>{chats.length}</span></div><button type="button" className="modal-close" onClick={() => setChatManagerOpen(false)} aria-label="Close" title="Close"><X size={18} /></button></header><div className="chat-manager-list">{chats.map((chat) => <div className={chat.id === activeChat.id ? "chat-manager-row active" : "chat-manager-row"} key={chat.id}>{editingChatId === chat.id ? <input autoFocus value={chat.title} onChange={(event) => renameChat(chat.id, event.target.value)} onBlur={() => setEditingChatId(null)} onKeyDown={(event) => event.key === "Enter" && setEditingChatId(null)} aria-label="Chat name" /> : <button type="button" className="chat-name" onClick={() => { setActiveChatId(chat.id); setChatManagerOpen(false); }} title="Open chat">{chat.title}</button>}<button type="button" className="edit-chat" onClick={() => setEditingChatId(chat.id)} aria-label={"Rename " + chat.title} title="Rename"><Pencil size={16} /></button><button type="button" className="delete-chat" onClick={() => deleteChat(chat.id)} aria-label={"Delete " + chat.title} title="Delete"><Trash2 size={16} /></button></div>)}</div><button type="button" className="new-chat-wide" onClick={() => { newChat(); setChatManagerOpen(false); }} title="New chat"><Plus size={17} />New chat</button></section></div>}
+      {bridgeHelp && <div className="modal-backdrop" role="presentation" onMouseDown={()=>setBridgeHelp(false)}><section className="bridge-help" role="dialog" aria-modal="true" aria-label="Connect ChatGPT" onMouseDown={event=>event.stopPropagation()}><header><strong>Connect your ChatGPT conversation</strong><button type="button" aria-label="Close" onClick={()=>setBridgeHelp(false)}><X size={18}/></button></header><p>This desktop Chrome prototype uses your own signed-in ChatGPT tab. Keep both tabs open. ChatGPT file, image and account limits still apply.</p><ol><li><a href="/grace-chatgpt-bridge.zip" download>Download the Grace Bridge extension</a> and unzip it.</li><li>Open <code>chrome://extensions</code>, turn on Developer mode, choose <strong>Load unpacked</strong>, and select the unzipped folder.</li><li>Refresh this site and ChatGPT. Open the Grace Plan conversation containing your reference PDF and select <strong>Instant</strong>.</li><li>Open the extension from Chrome's extensions menu. Choose that ChatGPT tab, confirm Instant and press <strong>Pair this chat</strong>.</li></ol><p>The extension can send your messages and attachments to the paired tab and read its replies. Pairing is opt-in for each Grace chat. Passwords and cookies are not requested. Mobile browsers are unsupported.</p><p className="bridge-verification">Prototype: the signed-in send → reply → PDF transfer still needs an end-to-end check in your browser. If a PDF cannot transfer, its original remains in ChatGPT.</p><button type="button" onClick={async()=>{setBridgeStatus(await browserBridgeStatus(activeChat.id,activeChat.title));}}>Check connection</button><p role="status">{bridgeStatus.paired?"Paired and ready":bridgeStatus.installed?"Extension installed — pair this chat":"Extension not detected"}</p></section></div>}
       {previewModal && <div className="modal-backdrop image-editor-backdrop" role="presentation" onMouseDown={() => setPreviewModal(null)}><section className="image-editor-modal" role="dialog" aria-modal="true" aria-label="Image review" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>Image review & comments</strong><span>{previewModal.name}</span></div><button type="button" className="modal-close" onClick={() => setPreviewModal(null)} aria-label="Close" title="Close"><X size={18} /></button></header><div className="image-stage" onClick={markPreview}><img src={previewModal.source} alt={previewModal.name} />{previewMarkers.map((marker, index) => <i key={index} style={{ left: marker.x + "%", top: marker.y + "%" }}>{index + 1}</i>)}</div><p className="editor-help">Select image locations and describe your requested changes. This adds a comment; it does not edit the image automatically.</p><textarea value={previewComment} onChange={(event) => setPreviewComment(event.target.value)} placeholder="Describe changes to the marked area" rows={3} /><button type="button" className="apply-edit" onClick={applyPreviewComment} disabled={!previewComment.trim()}>Add comment to chat</button></section></div>}
-      {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">OpenAI API</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
+      {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">{connectionMode==="chatgpt"?"ChatGPT browser":"OpenAI API"}</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
       {error && <div className="error">{error}</div>}
       <form className={`composer ${dragActive ? "drag-active" : ""}`} onSubmit={submit} onPaste={(event) => { const incoming = Array.from(event.clipboardData.files || []); if (incoming.length) { event.preventDefault(); ingestFiles(incoming); } }}>
         {attachmentPreviews.length > 0 && <div className="attachment-strip">{attachmentPreviews.map((item, index) => <div className="attachment-chip" key={item.file.name + index}>{item.file.type.startsWith("image/") && <button type="button" className="attachment-thumb" onClick={() => openPreview(item.url, item.file.name)} title="Preview image"><img src={item.url} alt={item.file.name} /></button>}<span title={item.file.name}>{item.file.name}</span><button type="button" className="remove-attachment" onClick={() => removeFile(index)} aria-label={"Remove " + item.file.name} title="Remove"><X size={14} /></button></div>)}</div>}

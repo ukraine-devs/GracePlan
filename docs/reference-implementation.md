@@ -1,5 +1,7 @@
 # Grace final proposal workflow
 
+The default connection is now the opt-in desktop ChatGPT browser bridge; see `docs/browser-bridge.md` for its prototype status, pairing requirements and verification limits. The API pipeline below is retained only for the explicitly selected API mode, with separate billing.
+
 The required agent model is pinned centrally to `chat-latest`, which official OpenAI documentation identifies as the latest ChatGPT Instant model. Chat, structured extraction, individual image analysis, visual review and render orchestration all use this ID. Stale `OPENAI_MODEL`, `OPENAI_CHAT_MODEL` and `OPENAI_RENDER_AGENT_MODEL` environment values cannot substitute another language model. Image pixels still come from the explicit `image_generation` tool (`gpt-image-2.5-sunburst`); this tool has its own API usage and is not a free ChatGPT session. The model ID is returned in API responses, including image-generation errors.
 
 The approved `good-work-1(3).pdf` contains 48 pages: six A2, forty-one A3 and one A4. Its archive `workflow_commands_bundle(5).zip` includes the historical R2 finalizer, page index and 67-command manual. The finalizer was inspected, not executed: it contains historical coordinates and modifies files for that earlier building.

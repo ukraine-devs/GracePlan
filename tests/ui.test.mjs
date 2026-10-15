@@ -10,6 +10,7 @@ test("window drop and ZIP use the same visible attachment queue, cleared immedia
   const dom = new JSDOM('<div id="root"></div>', { url: "https://graceplanner.vercel.app" });
   for (const name of ["window", "document", "localStorage", "HTMLElement", "Event", "MouseEvent"]) globalThis[name] = dom.window[name];
   Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true });
+  localStorage.setItem("grace-connection-mode-v2", "api");
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   // Prevent the image analysis from completing while we inspect the send boundary.
   globalThis.createImageBitmap = async () => new Promise(() => {});
