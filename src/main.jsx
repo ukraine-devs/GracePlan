@@ -5,7 +5,7 @@ import "./styles.css";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
 const ACTIVE_KEY = "grace-plan-active-chat";
-const progressSteps = ["Анализ фото", "Сборка ответа"];
+const progressSteps = ["Анализ фото", "Сборка ответа", "Концептуальный рендер"];
 const welcome = { role: "assistant", content: "Нужны фото 2D плана и +-5 фото минимум." };
 
 function createChat() { return { id: crypto.randomUUID(), title: "New chat", messages: [welcome], createdAt: Date.now() }; }
@@ -43,6 +43,33 @@ async function prepareImage(file) {
   } finally { bitmap.close(); }
 }
 
+
+async function makeContactSheets(photos) {
+  const sheets = [];
+  for (let start = 0; start < photos.length; start += 12) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1440; canvas.height = 900;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    for (let offset = 0; offset < Math.min(12, photos.length - start); offset++) {
+      const photo = photos[start + offset];
+      const bitmap = await createImageBitmap(photo);
+      try {
+        const x = (offset % 4) * 360 + 5;
+        const y = Math.floor(offset / 4) * 300 + 5;
+        const scale = Math.min(350 / bitmap.width, 255 / bitmap.height);
+        context.drawImage(bitmap, x + (350 - bitmap.width * scale) / 2, y, bitmap.width * scale, bitmap.height * scale);
+        context.fillStyle = "#111";
+        context.font = "14px Arial";
+        context.fillText(String(start + offset + 1) + ". " + photo.name.slice(0, 35), x, y + 280, 340);
+      } finally { bitmap.close(); }
+    }
+    sheets.push(canvas.toDataURL("image/jpeg", 0.7));
+  }
+  return sheets;
+}
+
 function App() {
   const [chats, setChats] = useState(loadChats);
   const [activeChatId, setActiveChatId] = useState(() => localStorage.getItem(ACTIVE_KEY) || null);
@@ -58,7 +85,14 @@ function App() {
   const messages = activeChat?.messages || [welcome];
 
   useEffect(() => { if (!activeChatId && chats[0]) setActiveChatId(chats[0].id); }, [activeChatId, chats]);
-  useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(chats)); }, [chats]);
+  useEffect(() => {
+    try {
+      const safeChats = chats.map((chat) => ({ ...chat, messages: chat.messages.map((message) => ({
+        ...message, artifacts: message.artifacts?.map(({ data, ...metadata }) => metadata)
+      })) }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(safeChats));
+    } catch { setError("Историю не удалось сохранить в браузере."); }
+  }, [chats]);
   useEffect(() => { if (activeChat?.id) localStorage.setItem(ACTIVE_KEY, activeChat.id); }, [activeChat?.id]);
   useEffect(() => { const timer = window.setTimeout(() => setShowStatus(false), 5500); return () => window.clearTimeout(timer); }, []);
   function updateActiveChat(updater) { setChats((current) => current.map((chat) => (chat.id === activeChat.id ? updater(chat) : chat))); }
@@ -93,12 +127,35 @@ function App() {
       await new Promise((resolve) => window.setTimeout(resolve, 650));
       const previousAssistant = [...nextMessages].reverse().find((message) => message.role === "assistant");
       const answer = data.answer?.trim();
-      const finalAnswer = answer && answer !== previousAssistant?.content?.trim()
+      let finalAnswer = answer && answer !== previousAssistant?.content?.trim()
         ? answer
-        : files.length
-          ? "Команда обработана. Проверьте результат и следующий этап."
-          : "Для выполнения нужны 2D-план и минимум 5 фотографий.";
-      updateActiveChat((chat) => ({ ...chat, messages: [...nextMessages, { role: "assistant", content: finalAnswer, artifacts: Array.isArray(data.artifacts) ? data.artifacts : [] }] }));
+        : "Результат не получен; проверьте входные данные.";
+      const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+      const wantsRender = /3d|bim|render|рендер|візуал|визуал/i.test(text);
+      if (wantsRender && files.length) {
+        const planIndexes = photoObservations.map((item, index) =>
+          /plan|план|drawing|чертёж|схема/i.test(String(item.observations?.kind || "") + " " + item.name) ? index : -1
+        ).filter((index) => index >= 0);
+        if (planIndexes.length === 1 && files.length > 1) {
+          setCurrentStep(2);
+          try {
+            const plan = (await prepareImage(files[planIndexes[0]])).data;
+            const photos = files.filter((_, index) => index !== planIndexes[0]);
+            const contactSheets = await makeContactSheets(photos);
+            const renderResponse = await fetch("/api/render-concept", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ plan, contactSheets, photoCount: photos.length })
+            });
+            const result = await renderResponse.json();
+            if (!renderResponse.ok) throw new Error(result.error || "Render failed");
+            artifacts.push(result.artifact);
+            finalAnswer += "\n\n3D: концептуальный рендер готов; точная BIM-геометрия и связь всех комнат с фото не подтверждены.";
+          } catch (renderError) { finalAnswer += "\n\n3D: не сформирован — " + renderError.message; }
+        } else {
+          finalAnswer += "\n\n3D: нужен ровно один распознанный 2D-план и фотографии одного этажа.";
+        }
+      }
+      updateActiveChat((chat) => ({ ...chat, messages: [...nextMessages, { role: "assistant", content: finalAnswer, artifacts }] }));
       setFiles([]);
     } catch (err) {
       setError(err.message);
@@ -115,7 +172,7 @@ function App() {
       </header>
       <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
       <div className="messages" aria-live="polite">
-        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p>{message.artifacts?.map((artifact) => <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}>{artifact.name}</a>)}</article>)}
+        {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p>{message.artifacts?.map((artifact) => artifact.data ? <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}>{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл доступен только до обновления страницы</span>)}</article>)}
         {isSending && <article className="message assistant progress-message"><span>Grace Plan</span>
           <div className={`execution-spoiler ${executionOpen ? "open" : ""}`}>
             <button className="execution-summary" type="button" onClick={() => setExecutionOpen((open) => !open)} aria-expanded={executionOpen}>
