@@ -6,7 +6,7 @@ import { createConceptReviewPdf } from "./exportDraft.js";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
 const ACTIVE_KEY = "grace-plan-active-chat";
-const progressSteps = ["Анализ фото", "Сборка ответа", "Концептуальный рендер"];
+const progressSteps = ["Підготовка файлів", "Аналіз кожного фото", "Перевірка 2D-плану", "Зіставлення фото", "Формування даних Grace Plan", "Концептуальний 3D-рендер", "Верстка A2 PDF"];
 const welcome = { role: "assistant", content: "Нужны фото 2D плана и +-5 фото минимум." };
 
 function createChat() { return { id: crypto.randomUUID(), title: "New chat", messages: [welcome], createdAt: Date.now() }; }
@@ -106,11 +106,13 @@ function App() {
     if ((!text && !files.length) || isSending) return;
     const nextMessages = [...messages, { role: "user", content: text || "Проаналізуйте прикріплені файли." }];
     updateActiveChat((chat) => ({ ...chat, title: chat.messages.length === 1 ? makeTitle(text || files[0].name) : chat.title, messages: nextMessages }));
-    setInput(""); setError(""); setIsSending(true); setCurrentStep(files.length ? 0 : 1); setPhotoProgress(files.length ? `0/${files.length}` : ""); setExecutionOpen(false);
+    setInput(""); setError(""); setIsSending(true); setCurrentStep(files.length ? 0 : 4); setPhotoProgress(files.length ? `0/${files.length}` : ""); setExecutionOpen(false);
     try {
       const photoObservations = [];
       for (const file of files) {
+        setCurrentStep(0);
         const prepared = await prepareImage(file);
+        setCurrentStep(1);
         const analysisResponse = await fetch("/api/analyze-image", {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(prepared)
         });
@@ -119,12 +121,15 @@ function App() {
         photoObservations.push(analysis);
         setPhotoProgress(`${photoObservations.length}/${files.length}`);
       }
-      setCurrentStep(1);
+      if (files.length) setCurrentStep(2);
+      await new Promise((resolve) => window.setTimeout(resolve, files.length ? 250 : 0));
+      if (files.length) setCurrentStep(3);
       const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: nextMessages, files: [], photoObservations }) });
       const raw = await response.text();
       let data;
       try { data = raw ? JSON.parse(raw) : {}; } catch { throw new Error(raw || "Сервер вернул некорректный ответ."); }
       if (!response.ok) throw new Error(data.error || "API error");
+      setCurrentStep(4);
       await new Promise((resolve) => window.setTimeout(resolve, 650));
       const previousAssistant = [...nextMessages].reverse().find((message) => message.role === "assistant");
       const answer = data.answer?.trim();
@@ -139,7 +144,7 @@ function App() {
           /plan|план|drawing|чертёж|схема/i.test(String(item.observations?.kind || "") + " " + item.name) ? index : -1
         ).filter((index) => index >= 0);
         if (planIndexes.length === 1 && files.length > 1) {
-          setCurrentStep(2);
+          setCurrentStep(5);
           try {
             const plan = (await prepareImage(files[planIndexes[0]])).data;
             const photos = files.filter((_, index) => index !== planIndexes[0]);
@@ -153,6 +158,7 @@ function App() {
             artifacts.push(result.artifact);
             finalAnswer += "\\n\\n3D: концептуальный рендер готов; точная BIM-геометрия и связь всех комнат с фото не подтверждены.";
             if (wantsPdf) {
+              setCurrentStep(6);
               const pdfUrl = await createConceptReviewPdf({ renderData: result.artifact.data, planData: plan, photoCount: photos.length });
               artifacts.push({ type: "pdf", name: "GracePlan_A2_concept_review.pdf", data: pdfUrl });
               finalAnswer += "\\nA2: создан один черновой лист по композиции эталона; полный комплект 6 A2 и оценка отклонения 21% ещё недоступны.";
