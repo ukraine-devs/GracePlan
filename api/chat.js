@@ -77,7 +77,6 @@ async function createProjectData(files, photoObservations, answer, apiKey) {
     headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
-      temperature: 0,
       response_format: {
         type: "json_schema",
         json_schema: {
@@ -224,7 +223,6 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
         messages: [{ role: "system", content: GRACE_PLAN_SYSTEM }, ...userMessages],
-        temperature: 0.1,
       }),
     });
     const data = await upstream.json();
