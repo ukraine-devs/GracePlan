@@ -1,5 +1,3 @@
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-
 const GRACE_PLAN_SYSTEM = `
 GOAL:
 Execute the Grace Plan workflow from the user's files and request. Do not merely answer or repeat. Each request must show the current command, status, result, and next command.
@@ -149,44 +147,6 @@ async function createConceptRender(files, answer, apiKey) {
   return call?.result ? "data:image/png;base64," + call.result : null;
 }
 
-async function createGracePlanPdf(answer, fileCount, renderData) {
-  const pdf = await PDFDocument.create();
-  const regular = await pdf.embedFont(StandardFonts.Helvetica);
-  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  const width = 1683.78, height = 1190.55;
-  const titles = [
-    "01 PLAN FLOOR", "02 NETWORKS AND ENGINEERING POINTS", "03 CCTV AND ACCESS",
-    "04 DATA, NAS AND SERVER", "05 CABLES, POWER AND CALCULATIONS", "06 GRACE PLAN SUMMARY"
-  ];
-  const lines = wrap(answer);
-  let renderImage = null;
-  if (renderData) { try { renderImage = await pdf.embedPng(renderData.split(",")[1]); } catch {} }
-  for (let pageIndex = 0; pageIndex < titles.length; pageIndex++) {
-    const page = pdf.addPage([width, height]);
-    page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(0.985, 0.985, 0.985) });
-    page.drawRectangle({ x: 45, y: 45, width: width - 90, height: height - 90, borderColor: rgb(.08,.08,.08), borderWidth: 2 });
-    page.drawText("GRACE PLAN", { x: 72, y: height - 92, size: 24, font: bold, color: rgb(.08,.08,.08) });
-    page.drawText(titles[pageIndex], { x: 72, y: height - 134, size: 18, font: bold });
-    page.drawLine({ start: { x: 72, y: height - 155 }, end: { x: width - 72, y: height - 155 }, thickness: 2, color: rgb(.1,.1,.1) });
-    page.drawRectangle({ x: 72, y: 150, width: 930, height: height - 340, borderColor: rgb(.1,.1,.1), borderWidth: 4 });
-    if (renderImage && pageIndex === 0) {
-      const scale = Math.min(880 / renderImage.width, (height - 410) / renderImage.height);
-      page.drawImage(renderImage, { x: 97, y: 185, width: renderImage.width * scale, height: renderImage.height * scale });
-    } else {
-      page.drawText("BIM / ENGINEERING WORK AREA", { x: 98, y: height - 205, size: 15, font: bold });
-    }
-    page.drawRectangle({ x: 1025, y: 150, width: 585, height: height - 340, color: rgb(1,.97,.98), borderColor: rgb(.75,.75,.75), borderWidth: 1 });
-    let y = height - 205;
-    for (const line of lines.slice(pageIndex * 18, pageIndex * 18 + 18)) {
-      page.drawText(line, { x: 1050, y, size: 11, font: regular, maxWidth: 530 }); y -= 24;
-    }
-    page.drawText("Sources: " + fileCount + " | Conceptual 3D/BIM | Verify dimensions before construction", { x: 72, y: 105, size: 10, font: regular });
-    page.drawText("A2 LANDSCAPE | GP-" + String(pageIndex + 1).padStart(2, "0"), { x: width - 330, y: 105, size: 10, font: bold });
-  }
-  const bytes = await pdf.save();
-  return "data:application/pdf;base64," + Buffer.from(bytes).toString("base64");
-}
-
 async function readJson(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -255,11 +215,12 @@ export default async function handler(req, res) {
         if (renderData) artifacts.push({ type: "image", name: "GracePlan_concept_3D.png", data: renderData });
       } catch (error) { renderError = error.message; }
     }
-    if (wantsPdf) {
-      const pdfData = await createGracePlanPdf(answer, files.length, renderData);
-      artifacts.push({ type: "pdf", name: "GracePlan_A2_package.pdf", data: pdfData });
-    }
-    const finalAnswer = renderError ? answer + "\n\nRENDER STATUS: failed — " + renderError : answer;
+    const blockers = [];
+    if (wantsPdf) blockers.push("PDF: не сформирован — нужны проверенная геометрия, связь фото с помещениями и верстка эталонных листов.");
+    if (renderError) blockers.push("3D-рендер: ошибка — " + renderError);
+    if (files.length > 16) blockers.push("3D-рендер: генератор получил только первые 16 изображений; остальные нельзя считать визуально учтенными.");
+    if (files.length && !projectData) blockers.push("Структурированные данные: извлечение не выполнено.");
+    const finalAnswer = [answer, ...blockers].join("\n\n");
     return res.status(200).json({ answer: finalAnswer, artifacts });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Server error" });
