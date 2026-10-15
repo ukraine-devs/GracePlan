@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ChevronDown, Plus, Send, Trash2 } from "lucide-react";
 import "./styles.css";
+import { createConceptReviewPdf } from "./exportDraft.js";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
 const ACTIVE_KEY = "grace-plan-active-chat";
@@ -131,7 +132,8 @@ function App() {
         ? answer
         : "Результат не получен; проверьте входные данные.";
       const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
-      const wantsRender = /3d|bim|render|рендер|візуал|визуал/i.test(text);
+      const wantsPdf = /pdf|пдф/i.test(text);
+      const wantsRender = /3d|bim|render|рендер|візуал|визуал|pdf|пдф/i.test(text);
       if (wantsRender && files.length) {
         const planIndexes = photoObservations.map((item, index) =>
           /plan|план|drawing|чертёж|схема/i.test(String(item.observations?.kind || "") + " " + item.name) ? index : -1
@@ -149,7 +151,12 @@ function App() {
             const result = await renderResponse.json();
             if (!renderResponse.ok) throw new Error(result.error || "Render failed");
             artifacts.push(result.artifact);
-            finalAnswer += "\n\n3D: концептуальный рендер готов; точная BIM-геометрия и связь всех комнат с фото не подтверждены.";
+            finalAnswer += "\\n\\n3D: концептуальный рендер готов; точная BIM-геометрия и связь всех комнат с фото не подтверждены.";
+            if (wantsPdf) {
+              const pdfUrl = await createConceptReviewPdf({ renderData: result.artifact.data, planData: plan, photoCount: photos.length });
+              artifacts.push({ type: "pdf", name: "GracePlan_A2_concept_review.pdf", data: pdfUrl });
+              finalAnswer += "\\nA2: создан один черновой лист по композиции эталона; полный комплект 6 A2 и оценка отклонения 21% ещё недоступны.";
+            }
           } catch (renderError) { finalAnswer += "\n\n3D: не сформирован — " + renderError.message; }
         } else {
           finalAnswer += "\n\n3D: нужен ровно один распознанный 2D-план и фотографии одного этажа.";
