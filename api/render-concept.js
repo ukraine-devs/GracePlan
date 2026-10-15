@@ -1,4 +1,5 @@
 import { GRACE_REFERENCE_PROFILE } from "../lib/referenceProfile.js";
+import { GRACE_AGENT_MODEL, GRACE_IMAGE_MODEL } from "../lib/modelPolicy.js";
 export const config = { runtime: "nodejs", maxDuration: 300 };
 
 export default async function handler(req, res) {
@@ -31,19 +32,20 @@ export default async function handler(req, res) {
       method: "POST",
       headers: { Authorization: "Bearer " + process.env.OPENAI_API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        model: GRACE_AGENT_MODEL,
         input: [{ role: "user", content: input }],
-        tools: [{ type: "image_generation", model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst", size: "1024x1024", quality: "high", action: "generate" }],
+        tools: [{ type: "image_generation", model: GRACE_IMAGE_MODEL, size: "1024x1024", quality: "high", action: "generate" }],
         tool_choice: { type: "image_generation" }
       })
     });
     const result = await upstream.json();
-    if (!upstream.ok) return res.status(upstream.status).json({ error: result.error?.message || "Render API failed" });
+    if (!upstream.ok) return res.status(upstream.status).json({ error: result.error?.message || "Render API failed", source: "openai", code: result.error?.code || null, model: GRACE_AGENT_MODEL, imageModel: GRACE_IMAGE_MODEL });
     const call = result.output?.find((item) => item.type === "image_generation_call" && item.result);
     if (!call) return res.status(502).json({ error: "Render tool returned no image" });
     return res.status(200).json({
       artifact: { type: "image", name: "GracePlan_concept_3D.png", data: "data:image/png;base64," + call.result },
       status: "concept_unverified",
+      model: GRACE_AGENT_MODEL, imageModel: GRACE_IMAGE_MODEL,
       photoCount: Number(photoCount || 0),
       referenceMethod: "contact_sheets", referenceProfile: GRACE_REFERENCE_PROFILE.id,
       exactGeometryVerified: false, referenceDeviationPercent: null

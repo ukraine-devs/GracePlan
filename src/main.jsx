@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ACCEPT_FILES, expandUploads, readFileDataUrl } from "./uploads.js";
 import { routeIntent, isPlanObservation } from "../lib/graceIntent.js";
+import { createExecutionLog } from "../lib/executionLog.js";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
 const ACTIVE_KEY = "grace-plan-active-chat";
@@ -289,12 +290,6 @@ function App() {
     setMenuOpen(false);
   };
 
-  function stage(id, label, status = "running") {
-    setRunLog((current) => {
-      const item = { id, label, status };
-      return current.some((entry) => entry.id === id) ? current.map((entry) => entry.id === id ? item : entry) : [...current, item];
-    });
-  }
   async function requestJson(url, payload) {
     const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     const raw = await response.text();
@@ -323,6 +318,8 @@ function App() {
     setInput(""); setError(""); setFiles([]); setIsSending(true);
     setCurrentStep(submittedFiles.length ? 0 : 4); setPhotoProgress(""); setExecutionOpen(true);
     setProgressPreviews([]); setRunLog([]);
+    const actualExecution = createExecutionLog(setRunLog);
+    const stage = actualExecution.stage;
     const userArtifacts = [];
     try {
       const photoObservations = [];
@@ -335,6 +332,15 @@ function App() {
         stage("read-" + index, "Read " + file.name, "done");
         userArtifacts.push({ type: "image", name: file.relativePath || file.name, data: prepared.data });
         setProgressPreviews((current) => [...current.slice(-3), { source: prepared.data, name: file.name }]);
+      }
+      if (userArtifacts.length) {
+        const savedUserArtifacts = await persistArtifacts(userId, userArtifacts);
+        nextMessages[nextMessages.length - 1].artifacts = savedUserArtifacts;
+        writeChat((chat) => ({ ...chat, messages: [...nextMessages] }));
+      }
+      for (let index = 0; index < preparedImages.length; index++) {
+        const file = submittedFiles[index];
+        const prepared = preparedImages[index];
         setCurrentStep(1); stage("analysis-" + index, "Analyzing " + file.name);
         const analysis = await requestJson("/api/analyze-image", prepared);
         photoObservations.push({ ...analysis, source_path: file.relativePath || file.name });
@@ -343,11 +349,6 @@ function App() {
       }
       decision = routeIntent({ text, observations: photoObservations, previousMode: activeChat.lastMode || "general" });
       setGraceSession(decision.mode === "grace");
-      if (userArtifacts.length) {
-        const savedUserArtifacts = await persistArtifacts(userId, userArtifacts);
-        nextMessages[nextMessages.length - 1].artifacts = savedUserArtifacts;
-        writeChat((chat) => ({ ...chat, messages: [...nextMessages] }));
-      }
       setCurrentStep(4);
       stage("reply", decision.mode === "grace" ? "Preparing Grace proposal data" : "Preparing reply");
       let data;
@@ -366,7 +367,6 @@ function App() {
       setGraceSession(projectMode);
       let finalAnswer = data.answer?.trim() || "";
       const artifacts = Array.isArray(data.artifacts) ? [...data.artifacts] : [];
-      const execution = Array.isArray(data.execution) ? [...data.execution] : [];
       const wantsPdf = projectMode && (/pdf|пдф|proposal|предлож|пропоз|@grace|погнали|новий проект|новый проект/i.test(text) || submittedFiles.length > 1);
       const wantsRender = projectMode && (wantsPdf || submittedFiles.length > 1 || /3d|bim|render|рендер|візуал|визуал/i.test(text));
       const planIndexes = photoObservations.map((item, index) => isPlanObservation(item) ? index : -1).filter((index) => index >= 0);
@@ -376,6 +376,7 @@ function App() {
       let contactSheets = previousArtifacts.filter((item) => item.kind === "contact_sheet").map((item) => item.data);
       let photoCount = submittedFiles.length ? submittedFiles.length - planIndexes.length : previousArtifacts.find((item) => item.kind === "source_plan")?.photoCount || 0;
       let renderQa = null;
+      let renderFailure = "";
       if (projectMode && planIndexes.length === 1) {
         const planIndex = planIndexes[0];
         const sourceFile = submittedFiles[planIndex];
@@ -418,6 +419,7 @@ function App() {
               stage("render-qa", "Comparison unavailable; render is unverified", "failed");
             }
           } catch (renderError) {
+            renderFailure = renderError.message;
             stage("render", "Render failed: " + renderError.message, "failed");
             setError(renderError.message);
           }
@@ -441,21 +443,20 @@ function App() {
           artifacts.push({ type: "pdf", name: filename, data: pdfUrl });
           stage("pdf", "Final proposal PDF created and validated", "done");
           finalAnswer = "Готово — проєктна пропозиція у PDF нижче. Документ містить 6 A2, тематичні додатки A3, фотоатлас і загальний A4. Геометрія, інженерні прив'язки та відсоток візуальної відповідності потребують перевірки.";
-          execution.push({ id: "PDF-EXPORT", label: "Final proposal PDF", status: "done_with_assumptions", detail: filename + " · measured reference layout, all source photos, A2/A3/A4 format checks" });
         } catch (pdfError) {
           stage("pdf", "PDF failed: " + pdfError.message, "failed"); setError(pdfError.message);
           finalAnswer = "Не вдалося завершити PDF: " + pdfError.message + ". Проміжні файли не є фінальним результатом.";
-          execution.push({ id: "PDF-EXPORT", label: "A2 PDF", status: "failed", detail: pdfError.message });
         }
       } else if (wantsPdf) {
-        finalAnswer = !planData ? "Для завершення пропозиції потрібен один розпізнаний 2D-план і фото приміщень. Фінальний PDF ще не сформовано." : "Фінальний PDF потребує завершеного рендера. Сталася помилка генерації; проміжні технічні файли не видаються як результат.";
+        finalAnswer = !planData ? "Для завершення пропозиції потрібен один розпізнаний 2D-план і фото приміщень. Фінальний PDF ще не сформовано." : "Фінальний PDF потребує завершеного рендера. " + (renderFailure ? "Причина: " + renderFailure + ". " : "Рендер ще не створено. ") + "Проміжні технічні файли не видаються як результат.";
       }
       setCurrentStep(6);
       const savedArtifacts = await persistArtifacts(messageId, artifacts);
-      writeChat((chat) => ({ ...chat, lastMode: projectMode ? "grace" : "general", messages: [...nextMessages, { id: messageId, role: "assistant", content: finalAnswer, artifacts: savedArtifacts, execution, mode: data.mode }] }));
+      writeChat((chat) => ({ ...chat, lastMode: projectMode ? "grace" : "general", messages: [...nextMessages, { id: messageId, role: "assistant", content: finalAnswer, artifacts: savedArtifacts, execution: projectMode ? actualExecution.snapshot() : [], mode: data.mode }] }));
     } catch (err) {
       setError(err.message); setInput(text);
-      writeChat((chat) => ({ ...chat, messages: nextMessages }));
+      stage("request-error", "Request failed: " + err.message, "failed");
+      writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не вдалося завершити запит: " + err.message, execution: actualExecution.snapshot() }] }));
     } finally {
       setCurrentStep(-1); setIsSending(false); setProgressPreviews([]);
     }

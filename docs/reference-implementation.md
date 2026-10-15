@@ -1,5 +1,7 @@
 # Grace final proposal workflow
 
+The required agent model is pinned centrally to `chat-latest`, which official OpenAI documentation identifies as the latest ChatGPT Instant model. Chat, structured extraction, individual image analysis, visual review and render orchestration all use this ID. Stale `OPENAI_MODEL`, `OPENAI_CHAT_MODEL` and `OPENAI_RENDER_AGENT_MODEL` environment values cannot substitute another language model. Image pixels still come from the explicit `image_generation` tool (`gpt-image-2.5-sunburst`); this tool has its own API usage and is not a free ChatGPT session. The model ID is returned in API responses, including image-generation errors.
+
 The approved `good-work-1(3).pdf` contains 48 pages: six A2, forty-one A3 and one A4. Its archive `workflow_commands_bundle(5).zip` includes the historical R2 finalizer, page index and 67-command manual. The finalizer was inspected, not executed: it contains historical coordinates and modifies files for that earlier building.
 
 The active React pipeline is upload → individual image review → source-plan identification → project data → contact references → concept render → visual comparison → final PDF composition → validation → download. A failure of the conversational text request does not interrupt an otherwise usable proposal pipeline. A missing render cannot be passed off as a complete final proposal.
@@ -14,4 +16,6 @@ Limits: PNG/JPEG/WebP and ZIP containing those images; up to 100 images, 20 MiB 
 
 The reference-section completeness threshold (80%) counts required section types. It does **not** measure visual similarity, factual completeness or geometric accuracy. Automatic visual review is fallible and keeps exact geometry unverified. Exact BIM/IFC, confirmed device positions, installation cable lengths, live product prices and a guarantee of 80% or 100% output fidelity remain outside verified capabilities.
 
-Verification includes table-driven intent tests, real `floor1.zip` expansion, API routing with old Grace context followed by a math question, pending-preview clearing before analysis finishes, button grid placement, PDF page sizes, photo inclusion and Unicode rendering.
+Verification includes table-driven intent tests, real `floor1.zip` expansion, API routing with old Grace context followed by a math question, pending-preview clearing before analysis finishes, button grid placement, PDF page sizes, photo inclusion and Unicode rendering. Actual client command outcomes and timestamps persist in the message, including failures; unused server command templates are not presented as an execution log.
+
+The production ZIP test reviewed all six source images and extracted project data. The image-generation request then returned `You have no credits remaining`. A fresh end-to-end render/PDF therefore remains blocked by the OpenAI account balance. Local PDF export with the prior actual render passed; this does not certify a new production render.

@@ -1,6 +1,7 @@
 import { WORKFLOW_CATALOG } from "./workflowCatalog.js";
 import { createHash } from "node:crypto";
 import { routeIntent, isPlanObservation } from "../lib/graceIntent.js";
+import { GRACE_AGENT_MODEL, GRACE_IMAGE_MODEL } from "../lib/modelPolicy.js";
 const GRACE_PLAN_SYSTEM = `
 You are Grace AI Planner, an architectural project-proposal assistant.
 Respond fluently in the user's language, with clear Markdown, headings only when useful, and no repetitive COMMAND/STATUS/OUTPUT/NEXT boilerplate.
@@ -65,7 +66,7 @@ async function createProjectData(files, photoObservations, answer, apiKey) {
     method: "POST",
     headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
+      model: GRACE_AGENT_MODEL,
       response_format: {
         type: "json_schema",
         json_schema: {
@@ -154,9 +155,9 @@ async function createConceptRender(files, answer, apiKey) {
     method: "POST",
     headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: process.env.OPENAI_RENDER_AGENT_MODEL || "gpt-4o-mini",
+      model: GRACE_AGENT_MODEL,
       input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...images] }],
-      tools: [{ type: "image_generation", model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst", size: "1536x1024", quality: "high", action: "generate" }],
+      tools: [{ type: "image_generation", model: GRACE_IMAGE_MODEL, size: "1536x1024", quality: "high", action: "generate" }],
       tool_choice: { type: "image_generation" }
     })
   });
@@ -218,14 +219,14 @@ export default async function handler(req, res) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
+        model: GRACE_AGENT_MODEL,
         messages: [{ role: "system", content: graceMode ? GRACE_PLAN_SYSTEM : GENERAL_CHAT_SYSTEM }, ...userMessages],
       }),
     });
     const data = await upstream.json();
     if (!upstream.ok) return res.status(upstream.status).json({ error: data.error?.message || "OpenAI API error" });
     const answer = data.choices?.[0]?.message?.content?.trim() || "Empty API response.";
-    if (!graceMode) return res.status(200).json({ answer, artifacts: [], execution: [], mode: "general" });
+    if (!graceMode) return res.status(200).json({ answer, artifacts: [], execution: [], model: GRACE_AGENT_MODEL, mode: "general" });
     const wantsPdf = /pdf|пдф|6\s*[xх×]?\s*a2|шість\s+а2|шесть\s+а2|комплект\s+лист/.test(requestText);
     const artifacts = [];
     const photoManifest = photoObservations.length
@@ -296,7 +297,7 @@ export default async function handler(req, res) {
       return { ...command, status, detail };
     });
     artifacts.push({ type: "json", name: "GracePlan_67_command_status.json", data: dataUrl("application/json", JSON.stringify(workflowStatus, null, 2)) });
-    return res.status(200).json({ answer: finalAnswer, artifacts, execution, workflowStatus, projectData, mode: "grace", intent: decision.reason });
+    return res.status(200).json({ answer: finalAnswer, artifacts, execution, workflowStatus, projectData, model: GRACE_AGENT_MODEL, mode: "grace", intent: decision.reason });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Server error" });
   }

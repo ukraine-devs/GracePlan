@@ -25,6 +25,8 @@ test("ordinary chat stays general after a Grace project and never generates work
     await handler(req, res);
     assert.equal(status, 200);
     assert.equal(result.mode, "general");
+    assert.equal(upstream.model, "chat-latest");
+    assert.equal(result.model, "chat-latest");
     assert.deepEqual(result.execution, []);
     assert.deepEqual(result.artifacts, []);
     assert.match(result.answer, /\*\*4\*\*/);
