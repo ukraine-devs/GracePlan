@@ -154,7 +154,8 @@ async function createConceptRender(files, answer, apiKey) {
     .map((file) => ({ type: "input_image", image_url: file.data, detail: "high" }));
   if (!images.length) return null;
   const prompt = [
-    "Create a conceptual axonometric 3D cutaway floor-plan render for Grace Plan.",
+    "Create a conceptual axonometric 3D cutaway render for Grace Plan.",
+    "Follow the requested scope exactly. If the request is for one room, crop/isolate only that single room and do not render the whole floor.",
     "Use the uploaded 2D plan for geometry and uploaded room photographs for finishes, furniture and room identity.",
     "Do not invent extra rooms. Preserve walls, doors, windows, stairs and room adjacency.",
     "Architectural visualization, clean white background, black cut walls, subtle pink security zones, realistic materials.",
@@ -272,9 +273,7 @@ export default async function handler(req, res) {
     if (photoObservations.length) blockers.push("Фото: " + photoObservations.length + " знімків проаналізовано окремо; прив’язку до приміщень не підтверджено.");
     if (files.length > 20) blockers.push("Аналіз приміщень: оброблено перші 20 зображень. Решта перебуває в реєстрі без візуальної перевірки.");
     if ((files.length || photoObservations.length) && !projectData) blockers.push("Структуровані дані: " + (projectError || "витяг не виконано."));
-    const correctedAnswer = !files.length && !photoObservations.length && /NEXT:\s*Готово/i.test(answer)
-      ? answer.replace(/NEXT:\s*Готово/i, "NEXT: Завантажте 2D-план і щонайменше п’ять фото приміщень.")
-      : answer;
+    let correctedAnswer = !files.length && !photoObservations.length && /NEXT:\s*Готово/i.test(answer)\n      ? answer.replace(/NEXT:\s*Готово/i, "NEXT: Завантажте 2D-план і щонайменше п’ять фото приміщень.")\n      : answer;\n    if (renderData) {\n      correctedAnswer = correctedAnswer.replace(/^.*(?:зображення|рендер|PNG).*(?:не створено|заблокован|недоступ).*$/gmi, "").trim();\n      correctedAnswer = "Зображення створено та додано до результату.\\n\\n" + correctedAnswer;\n    }
     const finalAnswer = [correctedAnswer, ...blockers].join("\n\n");
     const planCount = photoObservations.filter((photo) => /plan|план|drawing|креслен|схема/i.test(String(photo.observations?.kind || "") + " " + String(photo.name || ""))).length;
     const execution = [
