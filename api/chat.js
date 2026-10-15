@@ -185,6 +185,7 @@ async function readJson(req) {
   return {
     messages: Array.isArray(payload.messages) ? payload.messages : [],
     files: Array.isArray(payload.files) ? payload.files : [],
+    photoObservations: Array.isArray(payload.photoObservations) ? payload.photoObservations : [],
   };
 }
 
@@ -192,21 +193,25 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "OPENAI_API_KEY is missing in Vercel Environment Variables." });
   try {
-    const { messages, files } = await readJson(req);
+    const { messages, files, photoObservations } = await readJson(req);
     if (files.some((file) => !file.data || !file.type?.startsWith("image/"))) return res.status(400).json({ error: "Сейчас поддерживаются только изображения; другие файлы не анализируются." });
     const imageParts = files
       .filter((file) => file.data && file.type && file.type.startsWith("image/"))
       .map((file) => ({ type: "image_url", image_url: { url: file.data, detail: "high" } }));
-    const fileNotes = files
-      .map((file) => "Attached file: " + file.name + ", type: " + (file.type || "unknown") + ", size: " + (file.size || 0) + " bytes")
-      .join("\\n");
+    const fileNotes = files.map((file) => "Attached image: " + file.name).join("\\n");
+    const observationNotes = photoObservations.map((photo, index) =>
+      "PHOTO-" + String(index + 1).padStart(3, "0") + " " + String(photo.name || "") + ": " +
+      JSON.stringify(photo.observations || {}).slice(0, 3500)
+    ).join("\\n");
     const userMessages = messages.map((message) => ({
       role: message.role === "assistant" ? "assistant" : "user",
       content: String(message.content || ""),
     }));
     const lastUser = [...userMessages].reverse().find((message) => message.role === "user");
     if (lastUser && imageParts.length) {
-      lastUser.content = [{ type: "text", text: lastUser.content + "\\n\\n" + fileNotes }, ...imageParts];
+      lastUser.content = [{ type: "text", text: lastUser.content + "\\n\\n" + fileNotes + "\\n" + observationNotes }, ...imageParts];
+    } else if (lastUser && observationNotes) {
+      lastUser.content += "\\n\\nIndividual image observations (not original images):\\n" + observationNotes;
     } else if (fileNotes) {
       userMessages.unshift({ role: "user", content: fileNotes });
     }
@@ -228,7 +233,17 @@ export default async function handler(req, res) {
     const requestText = messages.filter((message) => message.role === "user").map((message) => String(message.content || "")).join(" ").toLowerCase();
     const wantsPdf = /pdf|пдф|grace plan|проектн/.test(requestText);
     const artifacts = [];
-    const photoManifest = createPhotoManifest(files);
+    const photoManifest = photoObservations.length
+      ? photoObservations.map((photo, index) => ({
+          id: "PHOTO-" + String(index + 1).padStart(3, "0"),
+          name: String(photo.name || ""),
+          sha256: photo.sha256 || null,
+          original_sha256: photo.originalSha256 || null,
+          analyzed_bytes: photo.analyzed_bytes || null,
+          review_status: photo.review_status || "unknown",
+          floor: null, room_id: null
+        }))
+      : createPhotoManifest(files);
     if (photoManifest.length) artifacts.push({ type: "json", name: "GracePlan_photo_manifest.json", data: dataUrl("application/json", JSON.stringify(photoManifest, null, 2)) });
     let projectData = null;
     let projectError = "";
@@ -252,7 +267,9 @@ export default async function handler(req, res) {
     const blockers = [];
     if (wantsPdf) blockers.push("PDF: не сформирован — нужны проверенная геометрия, связь фото с помещениями и верстка эталонных листов.");
     if (renderError) blockers.push("3D-рендер: ошибка — " + renderError);
+    if (photoObservations.length && wantsRender && !imageParts.length) blockers.push("3D-рендер: оригиналы не сохранены; анализ фото выполнен, но пакетный рендер ещё недоступен.");
     if (files.length > 16) blockers.push("3D-рендер: генератор получил только первые 16 изображений; остальные внесены в реестр, но не включены в генерацию.");
+    if (photoObservations.length) blockers.push("Фото: " + photoObservations.length + " снимков проанализированы отдельно; привязка к помещениям не подтверждена.");
     if (files.length > 20) blockers.push("Анализ помещений: обработаны только первые 20 изображений. Остальные находятся в реестре без визуальной проверки.");
     if (files.length && !projectData) blockers.push("Структурированные данные: " + (projectError || "извлечение не выполнено."));
     const finalAnswer = [answer, ...blockers].join("\n\n");
