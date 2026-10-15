@@ -1,4 +1,5 @@
 import {assertReady,isGenerating,assistantNodes,pdfLinks,allowedFileUrl,toMarkdown,fillEditor,sendButton} from "./dom-adapter.js";
+import {conversationUrl} from "./policy.js";
 let pending=null;
 const pause=(ms)=>new Promise(resolve=>setTimeout(resolve,ms));
 const emit=(id,kind,payload={})=>chrome.runtime.sendMessage({channel:"GRACE_TARGET_EVENT_V1",id,kind,...payload}).catch(()=>{});
@@ -15,6 +16,7 @@ async function collectPdf(link){
 async function run(job){
   let sent=false;
   try{
+    if(conversationUrl(location.href)!==job.chatUrl)throw new Error("The paired conversation changed. No message was sent.");
     const editor=assertReady();const before=assistantNodes().length;
     if(job.files.length){
       await emit(job.id,"stage",{stage:"upload",label:"Uploading files to your ChatGPT conversation"});
@@ -30,6 +32,7 @@ async function run(job){
     const uploadFailed=[...document.querySelectorAll('[role="alert"]')].map(n=>n.textContent).find(t=>/upload|file|файл|ліміт|limit|помил|error/i.test(t||""));
     if(uploadFailed)throw new Error(uploadFailed);
     await emit(job.id,"stage",{stage:"send",label:"Sending once through the visible ChatGPT composer"});
+    if(conversationUrl(location.href)!==job.chatUrl)throw new Error("The paired conversation changed. No message was sent.");
     sent=true;button.click();
     let lastText="",stableAt=Date.now(),started=false,lastHeartbeat=0;
     const deadline=Date.now()+30*60*1000;
@@ -52,11 +55,12 @@ async function run(job){
 chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
   if(message?.channel!=="GRACE_TARGET_V1")return;
   try{
+    if(["PROBE","BEGIN"].includes(message.action)&&conversationUrl(location.href)!==message.chatUrl)throw new Error("The intended ChatGPT conversation is no longer open.");
     if(message.action==="PROBE"){assertReady();sendResponse({ready:true});return;}
-    if(message.action==="BEGIN"){if(pending)throw new Error("A Grace request is already active in this tab.");assertReady();pending={id:message.id,text:message.text,files:[],expected:message.files.length};sendResponse({ready:true});return;}
+    if(message.action==="BEGIN"){if(pending)throw new Error("A Grace request is already active in this tab.");assertReady();pending={id:message.id,text:message.text,files:[],expected:message.files.length,chatUrl:message.chatUrl};sendResponse({ready:true});return;}
     if(!pending||pending.id!==message.id)throw new Error("ChatGPT bridge request expired. Check the tab before retrying.");
     if(message.action==="ABORT"){if(!pending.committed)pending=null;sendResponse({aborted:true});return;}
     if(message.action==="FILE"){pending.files.push(message.file);sendResponse({received:true});return;}
-    if(message.action==="COMMIT"){if(pending.files.length!==pending.expected)throw new Error("Attachment transfer is incomplete.");pending.committed=true;const job=pending;sendResponse({accepted:true});void run(job);return;}
+    if(message.action==="COMMIT"){if(pending.committed)throw new Error("This request was already dispatched. Check ChatGPT before retrying.");if(pending.files.length!==pending.expected)throw new Error("Attachment transfer is incomplete.");pending.committed=true;const job=pending;sendResponse({accepted:true});void run(job);return;}
   }catch(error){sendResponse({error:error.message});}
 });

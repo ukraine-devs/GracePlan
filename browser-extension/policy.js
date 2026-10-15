@@ -3,6 +3,13 @@ export const MAX_FILE_BYTES = 40 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 120 * 1024 * 1024;
 export function isSite(url) {try{return new URL(url).origin===SITE;}catch{return false;}}
 export function isChat(url) {try{const u=new URL(url);return u.origin==="https://chatgpt.com"&&!u.pathname.startsWith("/share/");}catch{return false;}}
+export function conversationUrl(url) {
+  try {
+    const u=new URL(url);
+    if(u.origin!=="https://chatgpt.com"||!/^\/(?:g\/[^/]+\/)?c\/[a-zA-Z0-9_-]{8,100}\/?$/.test(u.pathname))return null;
+    return u.origin+u.pathname.replace(/\/$/,"");
+  }catch{return null;}
+}
 export function validId(id) {return typeof id==="string"&&/^[a-zA-Z0-9_-]{8,100}$/.test(id);}
 export function validateRequest(message) {
   if(!validId(message.id)||!validId(message.chatId)) throw new Error("Invalid chat binding.");

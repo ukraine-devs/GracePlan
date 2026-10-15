@@ -9,7 +9,7 @@ export function bridgeCall(action,payload={},timeout=3000){
     window.addEventListener("message",receive);window.postMessage({channel:SITE_CHANNEL,action,...payload,id,callId},location.origin);
   });
 }
-export function browserBridgeStatus(chatId,title){return bridgeCall("STATUS",{chatId,title},1200).catch(()=>({installed:false,paired:false}));}
+export function browserBridgeStatus(chatId,title){return bridgeCall("STATUS",{chatId,title},1200).then(status=>status.protocol===2?{...status,chatId}:{installed:true,paired:false,chatId,updateRequired:true,reason:"Update Grace Bridge to version 0.2, then refresh this site and ChatGPT."}).catch(()=>({installed:false,paired:false,chatId}));}
 export async function bridgeFiles(files){
   if(files.length<=8)return files;
   const zip=new JSZip();for(const file of files)zip.file(file.relativePath||file.name,await file.arrayBuffer());

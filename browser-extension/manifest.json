@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Grace Planner · ChatGPT Browser Bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pair one Grace Planner chat with your own signed-in ChatGPT tab. Uses visible browser controls, without API keys.",
   "permissions": ["storage"],
   "host_permissions": ["https://chatgpt.com/*", "https://graceplanner.vercel.app/*"],
