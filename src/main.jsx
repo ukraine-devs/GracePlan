@@ -28,7 +28,7 @@ async function persistArtifacts(messageId, artifacts) {
     tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
   });
   db.close();
-  return artifacts.map(({ data, ...item }) => ({ ...item, storageKey: data ? messageId + ":" + item.name : item.storageKey }));
+  return artifacts.map((item) => ({ ...item, storageKey: item.data ? messageId + ":" + item.name : item.storageKey }));
 }
 async function hydrateArtifacts(chats) {
   const db = await openArtifactDb();
