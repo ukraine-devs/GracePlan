@@ -23,7 +23,7 @@ export default async function handler(req, res) {
         model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "Describe only visible evidence in this single architectural photograph or 2D plan. Answer JSON with keys kind, visible_rooms, surfaces, furniture, doors_windows_stairs, text_dimensions, uncertainty. Ukrainian or English. Do not claim a room ID, floor, scale or exact dimensions unless literally visible. Never infer hidden geometry." },
+          { role: "system", content: "Describe only visible evidence in this single architectural photograph or 2D plan. If it is a 2D plan, inspect it as a drafting document: preserve and report outer footprint, thick structural wall lines, thin partition/detail lines, openings, door swing arcs, window symbols, stairs, columns, fixtures, hatches, dimensions, labels, line hierarchy, symbol candidates, cropped/unclear regions, and whether scale is explicit. Answer JSON with keys kind, visible_rooms, surfaces, furniture, doors_windows_stairs, text_dimensions, line_hierarchy, plan_symbols, geometry_fidelity_checks, uncertainty. Ukrainian, English, or the user language. Never infer hidden geometry, redraw missing lines, or claim exact scale unless literally visible." },
           { role: "user", content: [{ type: "text", text: "File " + String(name || "").slice(0, 180) + ". Return image-specific factual observations." }, { type: "image_url", image_url: { url: data, detail: "high" } }] }
         ]
       })
