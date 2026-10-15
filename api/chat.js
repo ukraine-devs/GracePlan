@@ -47,7 +47,37 @@ function wrap(text, limit = 96) {
   return lines;
 }
 
-async function createGracePlanPdf(answer, fileCount) {
+async function createConceptRender(files, answer, apiKey) {
+  const images = files
+    .filter((file) => file.data && file.type?.startsWith("image/"))
+    .slice(0, 16)
+    .map((file) => ({ type: "input_image", image_url: file.data, detail: "high" }));
+  if (!images.length) return null;
+  const prompt = [
+    "Create a conceptual axonometric 3D cutaway floor-plan render for Grace Plan.",
+    "Use the uploaded 2D plan for geometry and uploaded room photographs for finishes, furniture and room identity.",
+    "Do not invent extra rooms. Preserve walls, doors, windows, stairs and room adjacency.",
+    "Architectural visualization, clean white background, black cut walls, subtle pink security zones, realistic materials.",
+    "No labels, no text, no watermark. This is conceptual, not an IFC/BIM deliverable.",
+    "Analysis summary:", ascii(answer).slice(0, 5000)
+  ].join("\n");
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      input: [{ role: "user", content: [{ type: "input_text", text: prompt }, ...images] }],
+      tools: [{ type: "image_generation", model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst", size: "1536x1024", quality: "high", action: "generate" }],
+      tool_choice: { type: "image_generation" }
+    })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || "Image generation failed");
+  const call = data.output?.find((item) => item.type === "image_generation_call" && item.result);
+  return call?.result ? "data:image/png;base64," + call.result : null;
+}
+
+async function createGracePlanPdf(answer, fileCount, renderData) {
   const pdf = await PDFDocument.create();
   const regular = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
@@ -57,6 +87,8 @@ async function createGracePlanPdf(answer, fileCount) {
     "04 DATA, NAS AND SERVER", "05 CABLES, POWER AND CALCULATIONS", "06 GRACE PLAN SUMMARY"
   ];
   const lines = wrap(answer);
+  let renderImage = null;
+  if (renderData) { try { renderImage = await pdf.embedPng(renderData.split(",")[1]); } catch {} }
   for (let pageIndex = 0; pageIndex < titles.length; pageIndex++) {
     const page = pdf.addPage([width, height]);
     page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(0.985, 0.985, 0.985) });
@@ -65,7 +97,12 @@ async function createGracePlanPdf(answer, fileCount) {
     page.drawText(titles[pageIndex], { x: 72, y: height - 134, size: 18, font: bold });
     page.drawLine({ start: { x: 72, y: height - 155 }, end: { x: width - 72, y: height - 155 }, thickness: 2, color: rgb(.1,.1,.1) });
     page.drawRectangle({ x: 72, y: 150, width: 930, height: height - 340, borderColor: rgb(.1,.1,.1), borderWidth: 4 });
-    page.drawText("BIM / ENGINEERING WORK AREA", { x: 98, y: height - 205, size: 15, font: bold });
+    if (renderImage && pageIndex === 0) {
+      const scale = Math.min(880 / renderImage.width, (height - 410) / renderImage.height);
+      page.drawImage(renderImage, { x: 97, y: 185, width: renderImage.width * scale, height: renderImage.height * scale });
+    } else {
+      page.drawText("BIM / ENGINEERING WORK AREA", { x: 98, y: height - 205, size: 15, font: bold });
+    }
     page.drawRectangle({ x: 1025, y: 150, width: 585, height: height - 340, color: rgb(1,.97,.98), borderColor: rgb(.75,.75,.75), borderWidth: 1 });
     let y = height - 205;
     for (const line of lines.slice(pageIndex * 18, pageIndex * 18 + 18)) {
@@ -128,11 +165,21 @@ export default async function handler(req, res) {
     const requestText = userMessages.map((message) => typeof message.content === "string" ? message.content : "").join(" ").toLowerCase();
     const wantsPdf = /pdf|пдф|grace plan|проектн/.test(requestText);
     const artifacts = [];
+    const wantsRender = /3d|bim|render|рендер|визуал/.test(requestText);
+    let renderData = null;
+    let renderError = "";
+    if (wantsRender && imageParts.length) {
+      try {
+        renderData = await createConceptRender(files, answer, process.env.OPENAI_API_KEY);
+        if (renderData) artifacts.push({ type: "image", name: "GracePlan_concept_3D.png", data: renderData });
+      } catch (error) { renderError = error.message; }
+    }
     if (wantsPdf) {
-      const pdfData = await createGracePlanPdf(answer, files.length);
+      const pdfData = await createGracePlanPdf(answer, files.length, renderData);
       artifacts.push({ type: "pdf", name: "GracePlan_A2_package.pdf", data: pdfData });
     }
-    return res.status(200).json({ answer, artifacts });
+    const finalAnswer = renderError ? answer + "\n\nRENDER STATUS: failed — " + renderError : answer;
+    return res.status(200).json({ answer: finalAnswer, artifacts });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Server error" });
   }
