@@ -281,7 +281,8 @@ export default async function handler(req, res) {
       correctedAnswer = "Зображення створено та додано до результату.\n\n" + correctedAnswer;
     }
     const finalAnswer = [correctedAnswer, ...blockers].join("\n\n");
-    const planCount = photoObservations.filter((photo) => /plan|план|drawing|креслен|схема/i.test(String(photo.observations?.kind || "") + " " + String(photo.name || ""))).length + files.filter((file) => /plan|план|drawing|креслен|схема/i.test(String(file.name || ""))).length;\n    const reviewedPhotoCount = photoObservations.length || Math.max(0, files.length - planCount);
+    const planCount = photoObservations.filter((photo) => /plan|план|drawing|креслен|схема/i.test(String(photo.observations?.kind || "") + " " + String(photo.name || ""))).length + files.filter((file) => /plan|план|drawing|креслен|схема/i.test(String(file.name || ""))).length;
+    const reviewedPhotoCount = photoObservations.length || Math.max(0, files.length - planCount);
     const execution = [
       { id: "CMD-001", label: "Завантаження та облік файлів", status: photoObservations.length || files.length ? "done_verified" : "needs_input", detail: (photoObservations.length || files.length) + " файлів враховано" },
       { id: "CMD-002", label: "Перевірка 2D-плану", status: planCount === 1 ? "done_with_assumptions" : "needs_input", detail: planCount === 1 ? "Знайдено один план; масштаб потребує перевірки" : "Потрібен рівно один розпізнаний 2D-план" },
