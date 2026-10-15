@@ -273,7 +273,13 @@ export default async function handler(req, res) {
     if (photoObservations.length) blockers.push("Фото: " + photoObservations.length + " знімків проаналізовано окремо; прив’язку до приміщень не підтверджено.");
     if (files.length > 20) blockers.push("Аналіз приміщень: оброблено перші 20 зображень. Решта перебуває в реєстрі без візуальної перевірки.");
     if ((files.length || photoObservations.length) && !projectData) blockers.push("Структуровані дані: " + (projectError || "витяг не виконано."));
-    let correctedAnswer = !files.length && !photoObservations.length && /NEXT:\s*Готово/i.test(answer)\n      ? answer.replace(/NEXT:\s*Готово/i, "NEXT: Завантажте 2D-план і щонайменше п’ять фото приміщень.")\n      : answer;\n    if (renderData) {\n      correctedAnswer = correctedAnswer.replace(/^.*(?:зображення|рендер|PNG).*(?:не створено|заблокован|недоступ).*$/gmi, "").trim();\n      correctedAnswer = "Зображення створено та додано до результату.\\n\\n" + correctedAnswer;\n    }
+    let correctedAnswer = !files.length && !photoObservations.length && /NEXT:\s*Готово/i.test(answer)
+      ? answer.replace(/NEXT:\s*Готово/i, "NEXT: Завантажте 2D-план і щонайменше п’ять фото приміщень.")
+      : answer;
+    if (renderData) {
+      correctedAnswer = correctedAnswer.replace(/^.*(?:зображення|рендер|PNG).*(?:не створено|заблокован|недоступ).*$/gmi, "").trim();
+      correctedAnswer = "Зображення створено та додано до результату.\n\n" + correctedAnswer;
+    }
     const finalAnswer = [correctedAnswer, ...blockers].join("\n\n");
     const planCount = photoObservations.filter((photo) => /plan|план|drawing|креслен|схема/i.test(String(photo.observations?.kind || "") + " " + String(photo.name || ""))).length;
     const execution = [
