@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 const GRACE_PLAN_SYSTEM = `
 GOAL:
 Execute the Grace Plan workflow from the user's files and request. Do not merely answer or repeat. Each request must show the current command, status, result, and next command.
@@ -47,6 +48,25 @@ function wrap(text, limit = 96) {
 
 function dataUrl(mime, text) {
   return "data:" + mime + ";base64," + Buffer.from(text, "utf8").toString("base64");
+}
+
+function createPhotoManifest(files) {
+  return files.map((file, index) => {
+    const comma = String(file.data || "").indexOf(",");
+    if (comma < 0) throw new Error("Некорректный файл: " + file.name);
+    const bytes = Buffer.from(file.data.slice(comma + 1), "base64");
+    if (!bytes.length) throw new Error("Пустой файл: " + file.name);
+    return {
+      id: "PHOTO-" + String(index + 1).padStart(3, "0"),
+      name: file.name,
+      mime: file.type,
+      size_bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      review_status: "not_individually_verified",
+      floor: null,
+      room_id: null
+    };
+  });
 }
 
 async function createProjectData(files, answer, apiKey) {
@@ -198,6 +218,8 @@ export default async function handler(req, res) {
     const requestText = messages.filter((message) => message.role === "user").map((message) => String(message.content || "")).join(" ").toLowerCase();
     const wantsPdf = /pdf|пдф|grace plan|проектн/.test(requestText);
     const artifacts = [];
+    const photoManifest = createPhotoManifest(files);
+    if (photoManifest.length) artifacts.push({ type: "json", name: "GracePlan_photo_manifest.json", data: dataUrl("application/json", JSON.stringify(photoManifest, null, 2)) });
     let projectData = null;
     let projectError = "";
     if (files.length) {
@@ -220,7 +242,8 @@ export default async function handler(req, res) {
     const blockers = [];
     if (wantsPdf) blockers.push("PDF: не сформирован — нужны проверенная геометрия, связь фото с помещениями и верстка эталонных листов.");
     if (renderError) blockers.push("3D-рендер: ошибка — " + renderError);
-    if (files.length > 16) blockers.push("3D-рендер: генератор получил только первые 16 изображений; остальные нельзя считать визуально учтенными.");
+    if (files.length > 16) blockers.push("3D-рендер: генератор получил только первые 16 изображений; остальные внесены в реестр, но не включены в генерацию.");
+    if (files.length > 20) blockers.push("Анализ помещений: обработаны только первые 20 изображений. Остальные находятся в реестре без визуальной проверки.");
     if (files.length && !projectData) blockers.push("Структурированные данные: " + (projectError || "извлечение не выполнено."));
     const finalAnswer = [answer, ...blockers].join("\n\n");
     return res.status(200).json({ answer: finalAnswer, artifacts });
