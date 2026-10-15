@@ -346,7 +346,7 @@ function App() {
   return (
     <main className="app-shell"><section className="chat-panel" aria-label="Grace Planner chat">
       <header className="topbar"><div className="brand-row"><div className="brand-text" aria-label="Grace AI Planner">Grace AI Planner</div></div>
-        <button className="icon-button chat-manager-button" type="button" onClick={() => setChatManagerOpen(true)} aria-label="Все чаты" title="Все чаты"><Menu size={18} /></button>
+        <button className="icon-button chat-manager-button" type="button" onClick={() => setChatManagerOpen(true)} aria-label="All chats" title="All chats"><Menu size={18} /></button>
         <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
         <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><span className={`agent-indicator ${agentState}`} role="status" aria-label={`Agent status: ${agentState}`} title={`Agent status: ${agentState}`} /></div>
       </header>
