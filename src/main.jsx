@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { ChevronDown, Menu, Pencil, Plus, Send, Trash2, X } from "lucide-react";
+import { ChevronDown, Menu, Pencil, Plus, Send, Trash2, X, Download } from "lucide-react";
 import "./styles.css";
 import { createConceptReviewPdf } from "./exportDraft.js";
 import JSZip from "jszip";

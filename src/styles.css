@@ -905,3 +905,5 @@ textarea::placeholder { color: #8a8a8a; }
   .chat-manager-row { grid-template-columns: minmax(0, 1fr) 34px 34px; }
   .attachment-chip { grid-template-columns: 34px minmax(54px, 100px) 24px; }
 }
+
+.command-row span { text-transform: lowercase; }
