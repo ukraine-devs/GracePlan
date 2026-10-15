@@ -181,7 +181,7 @@ async function readJson(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const body = Buffer.concat(chunks).toString("utf8");
-  const payload = body ? JSON.parse(body) : {};
+  const payload = req.body && typeof req.body === "object" ? req.body : body ? JSON.parse(body) : {};
   return {
     messages: Array.isArray(payload.messages) ? payload.messages : [],
     files: Array.isArray(payload.files) ? payload.files : [],
