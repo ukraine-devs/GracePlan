@@ -47,6 +47,78 @@ function wrap(text, limit = 96) {
   return lines;
 }
 
+function dataUrl(mime, text) {
+  return "data:" + mime + ";base64," + Buffer.from(text, "utf8").toString("base64");
+}
+
+async function createProjectData(files, answer, apiKey) {
+  const imageContent = files.filter((file) => file.data && file.type?.startsWith("image/")).slice(0, 20)
+    .map((file) => ({ type: "image_url", image_url: { url: file.data, detail: "high" } }));
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      temperature: 0,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "grace_plan_project",
+          strict: true,
+          schema: {
+            type: "object", additionalProperties: false,
+            properties: {
+              revision: { type: "integer" },
+              scale_status: { type: "string", enum: ["verified", "unknown"] },
+              rooms: { type: "array", items: { type: "object", additionalProperties: false, properties: {
+                id: { type: "string" }, name: { type: "string" }, floor: { type: "string" },
+                evidence: { type: "array", items: { type: "string" } },
+                finish: { type: "string" }
+              }, required: ["id","name","floor","evidence","finish"] } },
+              devices: { type: "array", items: { type: "object", additionalProperties: false, properties: {
+                id: { type: "string" }, type: { type: "string" }, room_id: { type: "string" },
+                power_w: { type: "number" }, status: { type: "string" }
+              }, required: ["id","type","room_id","power_w","status"] } },
+              routes: { type: "array", items: { type: "object", additionalProperties: false, properties: {
+                id: { type: "string" }, from: { type: "string" }, to: { type: "string" },
+                measured_m: { type: ["number","null"] }, reserve_percent: { type: "number" }
+              }, required: ["id","from","to","measured_m","reserve_percent"] } },
+              unresolved: { type: "array", items: { type: "string" } }
+            },
+            required: ["revision","scale_status","rooms","devices","routes","unresolved"]
+          }
+        }
+      },
+      messages: [{ role: "system", content: "Extract editable Grace Plan project data. Never invent measured lengths or power values; use null/0 and unresolved when evidence is absent. IDs must be stable." },
+        { role: "user", content: [{ type: "text", text: "Files: " + files.map((file) => file.name).join(", ") + "\nAnalysis:\n" + answer }, ...imageContent] }]
+    })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || "Project extraction failed");
+  return JSON.parse(data.choices?.[0]?.message?.content || "{}");
+}
+
+function createCableCsv(project) {
+  const rows = [["route_id","from","to","measured_m","reserve_percent","total_m","status"]];
+  for (const route of project.routes || []) {
+    const measured = Number.isFinite(route.measured_m) ? route.measured_m : "";
+    const total = measured === "" ? "" : (measured * (1 + (route.reserve_percent || 0) / 100)).toFixed(1);
+    rows.push([route.id, route.from, route.to, measured, route.reserve_percent, total, measured === "" ? "NEEDS_SCALE" : "CALCULATED"]);
+  }
+  return rows.map((row) => row.map((value) => '"' + String(value).replaceAll('"','""') + '"').join(",")).join("\n");
+}
+
+function createEngineeringSvg(project) {
+  const devices = project.devices || [];
+  const height = Math.max(500, 190 + devices.length * 48);
+  const items = devices.map((device, i) => {
+    const y = 150 + i * 48;
+    return '<g><rect x="520" y="' + (y - 24) + '" width="430" height="34" rx="8" fill="#fff" stroke="#111"/><text x="538" y="' + y + '" font-size="15">' +
+      ascii(device.id + "  " + device.type + "  " + device.room_id) + '</text><line x1="260" y1="118" x2="520" y2="' + (y - 7) + '" stroke="#2878b5" stroke-width="3"/></g>';
+  }).join("");
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="' + height + '" viewBox="0 0 1200 ' + height + '"><rect width="100%" height="100%" fill="#fafafa"/><text x="55" y="62" font-family="Arial" font-size="28" font-weight="700">GRACE PLAN — NETWORK TOPOLOGY</text><rect x="55" y="95" width="205" height="52" rx="10" fill="#111"/><text x="82" y="128" fill="#fff" font-family="Arial" font-size="17">SERVER / NVR</text>' + items + '<text x="55" y="' + (height - 40) + '" font-family="Arial" font-size="14">Blue: Cat6/data • Verify all routes and scale on site</text></svg>';
+}
+
 async function createConceptRender(files, answer, apiKey) {
   const images = files
     .filter((file) => file.data && file.type?.startsWith("image/"))
@@ -165,6 +237,15 @@ export default async function handler(req, res) {
     const requestText = userMessages.map((message) => typeof message.content === "string" ? message.content : "").join(" ").toLowerCase();
     const wantsPdf = /pdf|пдф|grace plan|проектн/.test(requestText);
     const artifacts = [];
+    let projectData = null;
+    if (files.length) {
+      try {
+        projectData = await createProjectData(files, answer, process.env.OPENAI_API_KEY);
+        artifacts.push({ type: "json", name: "GracePlan_project.json", data: dataUrl("application/json", JSON.stringify(projectData, null, 2)) });
+        artifacts.push({ type: "csv", name: "GracePlan_cable_schedule.csv", data: dataUrl("text/csv", createCableCsv(projectData)) });
+        artifacts.push({ type: "svg", name: "GracePlan_network_topology.svg", data: dataUrl("image/svg+xml", createEngineeringSvg(projectData)) });
+      } catch {}
+    }
     const wantsRender = /3d|bim|render|рендер|визуал/.test(requestText);
     let renderData = null;
     let renderError = "";
