@@ -163,6 +163,7 @@ export default async function handler(req, res) {
   if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "OPENAI_API_KEY is missing in Vercel Environment Variables." });
   try {
     const { messages, files } = await readJson(req);
+    if (files.some((file) => !file.data || !file.type?.startsWith("image/"))) return res.status(400).json({ error: "Сейчас поддерживаются только изображения; другие файлы не анализируются." });
     const imageParts = files
       .filter((file) => file.data && file.type && file.type.startsWith("image/"))
       .map((file) => ({ type: "image_url", image_url: { url: file.data, detail: "high" } }));
@@ -194,17 +195,18 @@ export default async function handler(req, res) {
     const data = await upstream.json();
     if (!upstream.ok) return res.status(upstream.status).json({ error: data.error?.message || "OpenAI API error" });
     const answer = data.choices?.[0]?.message?.content?.trim() || "Empty API response.";
-    const requestText = userMessages.map((message) => typeof message.content === "string" ? message.content : "").join(" ").toLowerCase();
+    const requestText = messages.filter((message) => message.role === "user").map((message) => String(message.content || "")).join(" ").toLowerCase();
     const wantsPdf = /pdf|пдф|grace plan|проектн/.test(requestText);
     const artifacts = [];
     let projectData = null;
+    let projectError = "";
     if (files.length) {
       try {
         projectData = await createProjectData(files, answer, process.env.OPENAI_API_KEY);
         artifacts.push({ type: "json", name: "GracePlan_project.json", data: dataUrl("application/json", JSON.stringify(projectData, null, 2)) });
         artifacts.push({ type: "csv", name: "GracePlan_cable_schedule.csv", data: dataUrl("text/csv", createCableCsv(projectData)) });
         artifacts.push({ type: "svg", name: "GracePlan_network_topology.svg", data: dataUrl("image/svg+xml", createEngineeringSvg(projectData)) });
-      } catch {}
+      } catch (error) { projectError = error.message || "Extraction failed"; }
     }
     const wantsRender = /3d|bim|render|рендер|визуал/.test(requestText);
     let renderData = null;
@@ -219,7 +221,7 @@ export default async function handler(req, res) {
     if (wantsPdf) blockers.push("PDF: не сформирован — нужны проверенная геометрия, связь фото с помещениями и верстка эталонных листов.");
     if (renderError) blockers.push("3D-рендер: ошибка — " + renderError);
     if (files.length > 16) blockers.push("3D-рендер: генератор получил только первые 16 изображений; остальные нельзя считать визуально учтенными.");
-    if (files.length && !projectData) blockers.push("Структурированные данные: извлечение не выполнено.");
+    if (files.length && !projectData) blockers.push("Структурированные данные: " + (projectError || "извлечение не выполнено."));
     const finalAnswer = [answer, ...blockers].join("\n\n");
     return res.status(200).json({ answer: finalAnswer, artifacts });
   } catch (error) {
