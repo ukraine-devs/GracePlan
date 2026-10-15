@@ -20,7 +20,7 @@ export default async function handler(req, res) {
       method: "POST",
       headers: { Authorization: "Bearer " + process.env.OPENAI_API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        model: process.env.OPENAI_CHAT_MODEL || "chat-latest",
         temperature: 0,
         response_format: { type: "json_object" },
         messages: [
