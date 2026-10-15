@@ -416,3 +416,35 @@ textarea::placeholder { color: #8a8a8a; }
   .brand-text span:last-child { font-size: 13px; }
   .status-badge { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; }
 }
+
+
+.command-log {
+  margin-top: 12px;
+  border: 1px solid #e4e4e4;
+  border-radius: 12px;
+  background: #fafafa;
+  overflow: hidden;
+}
+
+.command-log summary {
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #555;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.command-row {
+  display: grid;
+  gap: 3px;
+  padding: 9px 12px;
+  border-top: 1px solid #ececec;
+  font-size: 12px;
+}
+
+.command-row strong { color: #242424; }
+.command-row span { color: #686868; line-height: 1.35; }
+.command-row.done_verified,
+.command-row.done_with_assumptions { border-left: 3px solid #2f8f64; }
+.command-row.needs_input { border-left: 3px solid #d39a36; }
+.command-row.failed { border-left: 3px solid #bf5353; }
