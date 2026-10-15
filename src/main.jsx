@@ -265,10 +265,10 @@ function App() {
 
   return (
     <main className="app-shell"><section className="chat-panel" aria-label="Grace Planner chat">
-      <header className="topbar"><div className="brand-row"><div className="brand-text" aria-label="Grace AI"><span>Grace</span><span>AI</span></div></div>
+      <header className="topbar"><div className="brand-row"><div className="brand-text" aria-label="Grace AI Planner">Grace AI Planner</div></div>
+        <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
         <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><button className="icon-button" type="button" onClick={clearChat} aria-label="Clear chat" title="Clear chat"><Trash2 size={18} /></button></div>
       </header>
-      <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
       <div className="messages" aria-live="polite">
         {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p>{message.execution?.length > 0 && <details className="command-log"><summary>Команди виконання</summary>{message.execution.map((item) => <div className={`command-row ${item.status}`} key={item.id}><strong>{item.id} · {item.label}</strong><span>{item.detail}</span></div>)}</details>}{message.artifacts?.map((artifact) => artifact.data ? <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}>{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл доступний лише до оновлення сторінки</span>)}</article>)}
         {isSending && <article className="message assistant progress-message"><span>Grace Plan</span>
@@ -287,6 +287,7 @@ function App() {
       {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">OpenAI API</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
       {error && <div className="error">{error}</div>}
       <form className="composer" onSubmit={submit}>
+        <label className="prompt-box"><span>Message</span><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="Example: create the Grace Plan PDF package from all plans and photos..." rows={4} /></label>
         <label className="file-row" ref={containerRef}>
           <button type="button" className="file-button" onClick={toggleMenu} aria-label="Выберите файлы" title="Выберите файлы">
             <Plus size={18} />
@@ -300,7 +301,6 @@ function App() {
           )}
           <input type="file" ref={fileInputRef} multiple accept={accept} style={{display: 'none'}} onChange={handleFileChange} />
         </label>
-        <label className="prompt-box"><span>Message</span><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="Example: create the Grace Plan PDF package from all plans and photos..." rows={4} /></label>
         <button type="submit" disabled={isSending || (!input.trim() && !files.length)}>Send<Send size={18} /></button>
       </form>
     </section></main>
