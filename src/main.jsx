@@ -126,6 +126,7 @@ function App() {
   const [dragActive, setDragActive] = useState(false);
   const [editingChatId, setEditingChatId] = useState(null);
   const [activityTone, setActivityTone] = useState("idle");
+  const [graceSession, setGraceSession] = useState(false);
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -261,6 +262,8 @@ function App() {
     event.preventDefault();
     const text = input.trim();
     if ((!text && !files.length) || isSending) return;
+    const projectIntent = files.length > 0 || /@grace\b|@грейс\b|grace\s+plan|нов(?:ый|ий)\s+(план|проект)|new\s+(plan|project)|погнали|pdf|пдф|\b2d\b|\b3d\b|\bbim\b|рендер|render|комнат|кімнат|помещен|приміщен|фасад|cctv|камер|nas|nvr|кабел|схем|проектн.*предлож|смотри\s+на\s+фото|дивись\s+на\s+фото/i.test(text);
+    setGraceSession(projectIntent);
     const nextMessages = [...messages, { role: "user", content: text || "Проаналізуйте прикріплені файли." }];
     updateActiveChat((chat) => ({ ...chat, title: chat.messages.length === 1 ? makeTitle(text || files[0].name) : chat.title, messages: nextMessages }));
     setInput(""); setError(""); setIsSending(true); setCurrentStep(files.length ? 0 : 4); setPhotoProgress(files.length ? `0/${files.length}` : ""); setExecutionOpen(true); setProgressPreviews([]);
@@ -356,14 +359,14 @@ function App() {
           <div className={`execution-spoiler ${executionOpen ? "open" : ""}`}>
             <button className="execution-summary" type="button" onClick={() => setExecutionOpen((open) => !open)} aria-expanded={executionOpen}>
               <i className="status-spinner" aria-hidden="true" />
-              <strong key={currentStep}>{(progressSteps[currentStep] || "Выполнение команды") + (currentStep === 0 ? " " + photoProgress : "")}<b className="typing-dots"><em>.</em><em>.</em><em>.</em></b></strong>
+              <strong key={currentStep}>{graceSession ? (progressSteps[currentStep] || "Выполнение команды") + (currentStep === 0 ? " " + photoProgress : "") : "Thinking"}<b className="typing-dots"><em>.</em><em>.</em><em>.</em></b></strong>
               <ChevronDown className="spoiler-chevron" size={16} aria-hidden="true" />
             </button>
-            <div className="execution-details" aria-hidden={!executionOpen}><div>
+            {graceSession && <div className="execution-details" aria-hidden={!executionOpen}><div>
               {progressSteps.slice(0, currentStep + 1).map((step, index) => <p className={index === currentStep ? "active" : "done"} key={step}>{index === currentStep ? <i className="mini-spinner" aria-hidden="true" /> : <span aria-hidden="true">✓</span>}<span>{step}</span></p>)}
-            </div></div>
+            </div></div>}
           </div>
-          {progressPreviews.length > 0 && <div className="progress-previews">{progressPreviews.map((preview, index) => <button type="button" className="progress-preview" onClick={() => openPreview(preview.source, preview.name)} key={preview.name + index}><img src={preview.source} alt={preview.name} /><span>{preview.name}</span></button>)}</div>}
+          {graceSession && progressPreviews.length > 0 && <div className="progress-previews">{progressPreviews.map((preview, index) => <button type="button" className="progress-preview" onClick={() => openPreview(preview.source, preview.name)} key={preview.name + index}><img src={preview.source} alt={preview.name} /><span>{preview.name}</span></button>)}</div>}
         </article>}
       </div>
       {chatManagerOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => setChatManagerOpen(false)}><section className="chat-manager-modal" role="dialog" aria-modal="true" aria-label="All chats" onMouseDown={(event) => event.stopPropagation()}><header><div><strong>All chats</strong><span>{chats.length}</span></div><button type="button" className="modal-close" onClick={() => setChatManagerOpen(false)} aria-label="Close" title="Close"><X size={18} /></button></header><div className="chat-manager-list">{chats.map((chat) => <div className={chat.id === activeChat.id ? "chat-manager-row active" : "chat-manager-row"} key={chat.id}>{editingChatId === chat.id ? <input autoFocus value={chat.title} onChange={(event) => renameChat(chat.id, event.target.value)} onBlur={() => setEditingChatId(null)} onKeyDown={(event) => event.key === "Enter" && setEditingChatId(null)} aria-label="Chat name" /> : <button type="button" className="chat-name" onClick={() => { setActiveChatId(chat.id); setChatManagerOpen(false); }} title="Open chat">{chat.title}</button>}<button type="button" className="edit-chat" onClick={() => setEditingChatId(chat.id)} aria-label={"Rename " + chat.title} title="Rename"><Pencil size={16} /></button><button type="button" className="delete-chat" onClick={() => deleteChat(chat.id)} aria-label={"Delete " + chat.title} title="Delete"><Trash2 size={16} /></button></div>)}</div><button type="button" className="new-chat-wide" onClick={() => { newChat(); setChatManagerOpen(false); }} title="New chat"><Plus size={17} />New chat</button></section></div>}
