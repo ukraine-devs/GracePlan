@@ -1,3 +1,5 @@
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+
 const GRACE_PLAN_SYSTEM = `
 GOAL:
 Execute the Grace Plan workflow from the user's files and request. Do not merely answer or repeat. Each request must show the current command, status, result, and next command.
@@ -29,6 +31,52 @@ NEXT: next command or Готово
 `;
 
 export const config = { runtime: "nodejs" };
+
+function ascii(value) {
+  return String(value || "").normalize("NFKD").replace(/[^\x20-\x7E\n]/g, "?");
+}
+
+function wrap(text, limit = 96) {
+  const words = ascii(text).replace(/\r/g, "").split(/\s+/);
+  const lines = []; let line = "";
+  for (const word of words) {
+    if ((line + " " + word).trim().length > limit) { if (line) lines.push(line); line = word; }
+    else line = (line + " " + word).trim();
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+async function createGracePlanPdf(answer, fileCount) {
+  const pdf = await PDFDocument.create();
+  const regular = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const width = 1683.78, height = 1190.55;
+  const titles = [
+    "01 PLAN FLOOR", "02 NETWORKS AND ENGINEERING POINTS", "03 CCTV AND ACCESS",
+    "04 DATA, NAS AND SERVER", "05 CABLES, POWER AND CALCULATIONS", "06 GRACE PLAN SUMMARY"
+  ];
+  const lines = wrap(answer);
+  for (let pageIndex = 0; pageIndex < titles.length; pageIndex++) {
+    const page = pdf.addPage([width, height]);
+    page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(0.985, 0.985, 0.985) });
+    page.drawRectangle({ x: 45, y: 45, width: width - 90, height: height - 90, borderColor: rgb(.08,.08,.08), borderWidth: 2 });
+    page.drawText("GRACE PLAN", { x: 72, y: height - 92, size: 24, font: bold, color: rgb(.08,.08,.08) });
+    page.drawText(titles[pageIndex], { x: 72, y: height - 134, size: 18, font: bold });
+    page.drawLine({ start: { x: 72, y: height - 155 }, end: { x: width - 72, y: height - 155 }, thickness: 2, color: rgb(.1,.1,.1) });
+    page.drawRectangle({ x: 72, y: 150, width: 930, height: height - 340, borderColor: rgb(.1,.1,.1), borderWidth: 4 });
+    page.drawText("BIM / ENGINEERING WORK AREA", { x: 98, y: height - 205, size: 15, font: bold });
+    page.drawRectangle({ x: 1025, y: 150, width: 585, height: height - 340, color: rgb(1,.97,.98), borderColor: rgb(.75,.75,.75), borderWidth: 1 });
+    let y = height - 205;
+    for (const line of lines.slice(pageIndex * 18, pageIndex * 18 + 18)) {
+      page.drawText(line, { x: 1050, y, size: 11, font: regular, maxWidth: 530 }); y -= 24;
+    }
+    page.drawText("Sources: " + fileCount + " | Conceptual 3D/BIM | Verify dimensions before construction", { x: 72, y: 105, size: 10, font: regular });
+    page.drawText("A2 LANDSCAPE | GP-" + String(pageIndex + 1).padStart(2, "0"), { x: width - 330, y: 105, size: 10, font: bold });
+  }
+  const bytes = await pdf.save();
+  return "data:application/pdf;base64," + Buffer.from(bytes).toString("base64");
+}
 
 async function readJson(req) {
   const chunks = [];
@@ -76,7 +124,15 @@ export default async function handler(req, res) {
     });
     const data = await upstream.json();
     if (!upstream.ok) return res.status(upstream.status).json({ error: data.error?.message || "OpenAI API error" });
-    return res.status(200).json({ answer: data.choices?.[0]?.message?.content?.trim() || "Empty API response." });
+    const answer = data.choices?.[0]?.message?.content?.trim() || "Empty API response.";
+    const requestText = userMessages.map((message) => typeof message.content === "string" ? message.content : "").join(" ").toLowerCase();
+    const wantsPdf = /pdf|пдф|grace plan|проектн/.test(requestText);
+    const artifacts = [];
+    if (wantsPdf) {
+      const pdfData = await createGracePlanPdf(answer, files.length);
+      artifacts.push({ type: "pdf", name: "GracePlan_A2_package.pdf", data: pdfData });
+    }
+    return res.status(200).json({ answer, artifacts });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Server error" });
   }
