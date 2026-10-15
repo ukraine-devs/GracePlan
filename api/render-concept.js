@@ -15,7 +15,8 @@ export default async function handler(req, res) {
     }
     const prompt = [
       "Create ONE new photoreal architectural axonometric cutaway concept render for a Grace Plan proposal.",
-      "The FIRST image is the sole geometry authority: preserve its outer footprint, wall positions, room count, relative room sizes, doors, windows and stair locations.",
+      "The FIRST image is the immutable geometry authority. Trace its outer footprint and every visible thick wall, thin partition, opening, door swing, window, stair, column and room boundary before styling.",
+      "Do not simplify, merge, invent, rotate, mirror, resize or relocate rooms. Preserve line hierarchy and plan topology. If a symbol is unclear, leave that area conservative rather than guessing.",
       "The subsequent images are contact sheets representing " + Number(photoCount || 0) + " separate photographs. Infer surfaces and furniture only where visible; uncertain mappings stay generic.",
       "Deep charcoal-black horizontal wall cuts, near-overhead perspective, furnished interiors, clean white background, high-detail materials.",
       "No title, no labels, no symbols, no page layout. Do not turn a commercial building into an apartment.",
