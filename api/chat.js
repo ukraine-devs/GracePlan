@@ -255,7 +255,7 @@ export default async function handler(req, res) {
         artifacts.push({ type: "svg", name: "GracePlan_network_topology.svg", data: dataUrl("image/svg+xml", createEngineeringSvg(projectData)) });
       } catch (error) { projectError = error.message || "Extraction failed"; }
     }
-    const wantsRender = /3d|bim|render|рендер|визуал/.test(requestText);
+    const wantsRender = /3d|bim|render|рендер|визуал|зображ|картин|image|picture/.test(requestText);
     let renderData = null;
     let renderError = "";
     if (wantsRender && imageParts.length) {
