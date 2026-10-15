@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   try {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
-    const raw = Buffer.concat(chunks);
+    const raw = req.body && typeof req.body === "object" ? Buffer.from(JSON.stringify(req.body)) : Buffer.concat(chunks);
     if (raw.length > 3_900_000) return res.status(413).json({ error: "Render references exceed request limit" });
     const { plan, contactSheets, photoCount } = JSON.parse(raw.toString("utf8"));
     const valid = (data) => /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(data || "");
