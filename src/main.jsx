@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Plus, Send, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Plus, Send, Trash2 } from "lucide-react";
 import "./styles.css";
 
 const STORAGE_KEY = "grace-plan-chat-sessions";
@@ -38,6 +38,7 @@ function App() {
   const [files, setFiles] = useState([]);
   const [isSending, setIsSending] = useState(false);
   const [currentStep, setCurrentStep] = useState(-1);
+  const [executionOpen, setExecutionOpen] = useState(false);
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) || chats[0], [activeChatId, chats]);
@@ -57,7 +58,7 @@ function App() {
     if ((!text && !files.length) || isSending) return;
     const nextMessages = [...messages, { role: "user", content: text || "Проаналізуйте прикріплені файли." }];
     updateActiveChat((chat) => ({ ...chat, title: chat.messages.length === 1 ? makeTitle(text || files[0].name) : chat.title, messages: nextMessages }));
-    setInput(""); setError(""); setIsSending(true); setCurrentStep(0);
+    setInput(""); setError(""); setIsSending(true); setCurrentStep(0); setExecutionOpen(false);
     const timer = window.setInterval(() => setCurrentStep((step) => Math.min(step + 1, progressSteps.length - 1)), 1200);
     try {
       const filePayload = await Promise.all(files.map(readFile));
@@ -92,7 +93,18 @@ function App() {
       <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
       <div className="messages" aria-live="polite">
         {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "Ви" : "Grace Plan"}</span><p>{message.content}</p></article>)}
-        {isSending && <article className="message assistant progress-message"><span>Grace Plan</span><div className="live-status" key={currentStep}><i aria-hidden="true" /><p>{progressSteps[currentStep] || "Выполнение команды"}<b className="typing-dots"><em>.</em><em>.</em><em>.</em></b></p></div></article>}
+        {isSending && <article className="message assistant progress-message"><span>Grace Plan</span>
+          <div className={`execution-spoiler ${executionOpen ? "open" : ""}`}>
+            <button className="execution-summary" type="button" onClick={() => setExecutionOpen((open) => !open)} aria-expanded={executionOpen}>
+              <i className="status-spinner" aria-hidden="true" />
+              <strong key={currentStep}>{progressSteps[currentStep] || "Выполнение команды"}<b className="typing-dots"><em>.</em><em>.</em><em>.</em></b></strong>
+              <ChevronDown className="spoiler-chevron" size={16} aria-hidden="true" />
+            </button>
+            <div className="execution-details" aria-hidden={!executionOpen}><div>
+              {progressSteps.slice(0, currentStep + 1).map((step, index) => <p className={index === currentStep ? "active" : "done"} key={step}>{index === currentStep ? <i className="mini-spinner" aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}<span>{step}</span></p>)}
+            </div></div>
+          </div>
+        </article>}
       </div>
       {showStatus && <div className="status-badges" aria-label="Connection"><span className="status-badge">OpenAI API</span><span className="status-plus">+</span><span className="status-badge">GPT Мгновенный</span></div>}
       {error && <div className="error">{error}</div>}
