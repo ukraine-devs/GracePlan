@@ -942,3 +942,19 @@ textarea::placeholder { color: #8a8a8a; }
   .attachment-chip { grid-template-columns: 34px minmax(54px, 100px) 24px; }
 }
 
+
+.footer-links {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  padding: 12px 0;
+  font-size: 13px;
+  color: #666;
+}
+.footer-links a {
+  color: #666;
+  text-decoration: none;
+}
+.footer-links a:hover {
+  text-decoration: underline;
+}

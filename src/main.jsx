@@ -524,6 +524,11 @@ function App() {
         {isPreparingFiles && <span className="upload-preparing" role="status">Preparing attachments…</span>}
         <button type="submit" aria-label="Send" title="Send" disabled={isSending || isPreparingFiles || (!input.trim() && !files.length)}>Send<Send size={18} /></button>
       </form>
+      <footer className="footer-links">
+        <a href="/terms.html" target="_self">Условия</a>
+        <a href="/privacy.html" target="_self">Конфиденциальность</a>
+        <a href="/support.html" target="_self">Поддержка</a>
+      </footer>
     </section></main>
   );
 }
