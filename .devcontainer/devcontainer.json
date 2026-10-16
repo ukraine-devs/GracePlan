@@ -1,0 +1,24 @@
+{
+  "name": "Grace Ubuntu Browser",
+  "build": { "dockerfile": "Dockerfile" },
+  "remoteUser": "vscode",
+  "features": {
+    "ghcr.io/devcontainers/features/desktop-lite:1": {
+      "password": "noPassword",
+      "webPort": "6080",
+      "vncPort": "5901"
+    }
+  },
+  "forwardPorts": [6080],
+  "portsAttributes": {
+    "6080": {
+      "label": "Grace private Ubuntu desktop",
+      "visibility": "private",
+      "onAutoForward": "notify"
+    },
+    "5901": { "onAutoForward": "ignore" }
+  },
+  "otherPortsAttributes": { "onAutoForward": "ignore" },
+  "postStartCommand": "bash .devcontainer/start-browser.sh",
+  "hostRequirements": { "cpus": 2, "memory": "4gb", "storage": "16gb" }
+}
