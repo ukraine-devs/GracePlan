@@ -1,6 +1,8 @@
+> Mobile transport update: production uses the existing server API directly; extension code is not loaded or packaged. Google Cloud project/service-account identifiers alone do not authorize a deployment or supply ChatGPT model access. API inference still requires provider access and available balance.
+
 # Grace final proposal workflow
 
-The default connection is now the opt-in desktop ChatGPT browser bridge; see `docs/browser-bridge.md` for its prototype status, pairing requirements and verification limits. The API pipeline below is retained only for the explicitly selected API mode, with separate billing.
+The production transport is the existing server API on every device. There is no extension handshake, model selection dropdown or browser-pairing dialog. The desktop bridge in `docs/browser-bridge.md` is archived. API access is separate from ChatGPT web sessions and needs available provider balance.
 
 The required agent model is pinned centrally to `chat-latest`, which official OpenAI documentation identifies as the latest ChatGPT Instant model. Chat, structured extraction, individual image analysis, visual review and render orchestration all use this ID. Stale `OPENAI_MODEL`, `OPENAI_CHAT_MODEL` and `OPENAI_RENDER_AGENT_MODEL` environment values cannot substitute another language model. Image pixels still come from the explicit `image_generation` tool (`gpt-image-2.5-sunburst`); this tool has its own API usage and is not a free ChatGPT session. The model ID is returned in API responses, including image-generation errors.
 

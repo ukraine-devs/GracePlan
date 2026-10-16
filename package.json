@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node --test --test-reporter=dot tests/*.test.mjs",
     "dev": "vite",
-    "build": "node scripts/package-bridge.mjs && vite build",
+    "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {

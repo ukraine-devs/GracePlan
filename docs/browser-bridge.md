@@ -1,6 +1,10 @@
+# Archived desktop prototype
+
+The production app no longer imports this bridge, emits extension handshake messages, displays pairing/install instructions or builds an extension package. The source remains for historical review. Production inference uses the server API configured by the later branch change. The archived bridge never supplied mobile support or a permanent shared ChatGPT login.
+
 # ChatGPT browser bridge prototype
 
-Grace Planner now defaults to `ChatGPT browser`. The site does not call the OpenAI API in this mode and never falls back to paid inference. The existing API path is available only after explicitly selecting `OpenAI API (separate billing)`.
+Historical version 0.2 defaulted to `ChatGPT browser`. The site does not call the OpenAI API in this mode and never falls back to paid inference. The existing API path is available only after explicitly selecting `OpenAI API (separate billing)`.
 
 The companion Chrome Manifest V3 extension pairs one Grace chat with one existing, signed-in ChatGPT tab. The user selects the Grace Plan conversation that already contains the approved PDF and workflow references, selects Instant in ChatGPT, then explicitly pairs it in the extension popup. Instant is confirmed by the user, not programmatically guaranteed after later changes in ChatGPT. The extension submits new messages through the visible composer, uploads the provided files through the normal file input, waits for a completed assistant response, mirrors its visible answer, and attempts to transfer genuine PDF bytes from visible output links. Pairing does not import or merge older histories. The ChatGPT conversation is retained.
 

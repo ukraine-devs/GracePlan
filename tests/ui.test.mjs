@@ -39,4 +39,5 @@ test("window drop and ZIP use the same visible attachment queue, cleared immedia
   const css = await readFile("src/styles.css", "utf8");
   assert.match(css, /\.composer > \.file-row \{ grid-row: 3; grid-column: 1; \}/);
   assert.match(css, /\.composer > button\[type="submit"\] \{ grid-row: 3; grid-column: 2; \}/);
+  dom.window.close();
 });
