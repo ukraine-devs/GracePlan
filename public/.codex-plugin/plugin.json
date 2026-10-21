@@ -1,30 +1,48 @@
 {
-  "interface": {
-    "brandColor": "#CA7795",
-    "capabilities": [
-      "Interactive"
-    ],
-    "category": "Productivity",
-    "defaultPrompt": [
-      "Создай комплект 6 A2 с дополнениями по всем фотографиям и планам.",
-      "Проверь привязку каждого фото к помещению и отделку всех комнат.",
-      "Пересчитай кабели, PoE, архив, UPS и сметы вариантов проекта."
-    ],
-    "developerName": "Инна Кувардина",
-    "displayName": "Grace Plan",
-    "longDescription": "Полный цикл по фотографиям помещений и 2D-планам: учет каждого снимка, привязка комнат, индивидуальные материалы, правила BIM и концептуальных рендеров, CCTV, Wi-Fi, NAS/NVR, серверы, гостевой доступ, кабели, питание, сметы и печатный комплект. Включает 67 команд, шесть исторических промптов и исполнимую проверку расчета R2. Это плагин навыков и скриптов, использующий доступные инструменты ChatGPT; отдельного BIM-движка и сервера нет.",
-    "shortDescription": "Этажи, безопасность и расчёты",
-    "websiteURL": "https://graceplanner.vercel.app/grace-plan/",
-    "privacyPolicyURL": "https://graceplanner.vercel.app/grace-plan/privacy/",
-    "termsOfServiceURL": "https://graceplanner.vercel.app/grace-plan/terms/"
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "grace-file-assistant",
+  "version": "0.2.1",
+  "description": "Grace: floor plan, photo inventory, engineering layout, and project documentation workflow using available ChatGPT tools.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Grace Plan",
+        "shortDescription": "Floor plan to proposal",
+        "longDescription": "Grace helps prepare project proposals from uploaded floor plans and room photos. It guides photo and room inventories, conceptual visuals, engineering layouts, transparent calculations, and document packages where available tools support them. It does not include an independent BIM engine, guaranteed image generation, or an OpenAI model selector. ChatGPT usage limits and model selection remain governed by ChatGPT.",
+        "category": "Productivity",
+        "capabilities": [
+          "File handling"
+        ],
+        "defaultPrompt": [
+          "Create a six-sheet A2 BIM security proposal using all uploaded floor plans and photos.",
+          "Map every room photo to its floor and generate a PDF project with camera and network plans."
+        ],
+        "logo": "./assets/grace-icon.png",
+        "composerIcon": "./assets/grace-icon.png",
+        "brandColor": "#CA7795",
+        "developerName": "SYMBIOTYC"
+      },
+      "publication": {
+        "release_notes": "Public submission package; removed all project-specific facility data and archives."
+      }
+    }
   },
-  "name": "bim-security",
-  "version": "1.0.1",
-  "description": "Проектирование по всем фото и планам: 67 команд, правила 3D/BIM, схемы безопасности, расчеты и комплект A2/A3/A4. Навык со скриптами; требует инструментов текущей среды.",
-  "author": {
-    "name": "Инна Кувардина",
-    "email": "inna.kuvardina93@gmail.com"
+  "displayName": "Grace Plan",
+  "shortDescription": "Floor plan to proposal",
+  "developerName": "SYMBIOTYC",
+  "author": "SYMBIOTYC",
+  "homepage": "https://graceplanner.vercel.app/plugin.html",
+  "repository": "https://github.com/ukraine-devs/GracePlan",
+  "supportUrl": "https://graceplanner.vercel.app/plugin-support.html",
+  "privacyPolicyUrl": "https://graceplanner.vercel.app/plugin-privacy.html",
+  "termsOfServiceUrl": "https://graceplanner.vercel.app/plugin-terms.html",
+  "releaseNotes": "Public submission package; removed all project-specific facility data and archives.",
+  "publication": {
+    "countries": [
+      "UA"
+    ]
   },
-  "keywords": [],
-  "skills": "./skills"
+  "review": {
+    "commerce": false
+  }
 }

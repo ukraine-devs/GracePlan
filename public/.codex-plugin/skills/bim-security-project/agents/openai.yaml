@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grace Plan"
+  short_description: "Этажи по фото, схемы и расчёты"
+  default_prompt: "Используй $bim-security-project для создания комплекта этажей, схем безопасности и проверяемой сметы по всем фотографиям."
