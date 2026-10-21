@@ -1,0 +1,30 @@
+{
+  "interface": {
+    "brandColor": "#CA7795",
+    "capabilities": [
+      "Interactive"
+    ],
+    "category": "Productivity",
+    "defaultPrompt": [
+      "Создай комплект 6 A2 с дополнениями по всем фотографиям и планам.",
+      "Проверь привязку каждого фото к помещению и отделку всех комнат.",
+      "Пересчитай кабели, PoE, архив, UPS и сметы вариантов проекта."
+    ],
+    "developerName": "Инна Кувардина",
+    "displayName": "Grace Plan",
+    "longDescription": "Полный цикл по фотографиям помещений и 2D-планам: учет каждого снимка, привязка комнат, индивидуальные материалы, правила BIM и концептуальных рендеров, CCTV, Wi-Fi, NAS/NVR, серверы, гостевой доступ, кабели, питание, сметы и печатный комплект. Включает 67 команд, шесть исторических промптов и исполнимую проверку расчета R2. Это плагин навыков и скриптов, использующий доступные инструменты ChatGPT; отдельного BIM-движка и сервера нет.",
+    "shortDescription": "Этажи, безопасность и расчёты",
+    "websiteURL": "https://graceplanner.vercel.app/grace-plan/",
+    "privacyPolicyURL": "https://graceplanner.vercel.app/grace-plan/privacy/",
+    "termsOfServiceURL": "https://graceplanner.vercel.app/grace-plan/terms/"
+  },
+  "name": "bim-security",
+  "version": "1.0.1",
+  "description": "Проектирование по всем фото и планам: 67 команд, правила 3D/BIM, схемы безопасности, расчеты и комплект A2/A3/A4. Навык со скриптами; требует инструментов текущей среды.",
+  "author": {
+    "name": "Инна Кувардина",
+    "email": "inna.kuvardina93@gmail.com"
+  },
+  "keywords": [],
+  "skills": "./skills"
+}
