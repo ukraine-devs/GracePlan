@@ -20,7 +20,7 @@
         "logo": "./assets/grace-icon.png",
         "composerIcon": "./assets/grace-icon.png",
         "brandColor": "#CA7795",
-        "developerName": "SYMBIOTYC"
+        "developerName": "Инна Кувардина"
       },
       "publication": {
         "release_notes": "Public submission package; removed all project-specific facility data and archives."
@@ -29,8 +29,8 @@
   },
   "displayName": "Grace Plan",
   "shortDescription": "Floor plan to proposal",
-  "developerName": "SYMBIOTYC",
-  "author": "SYMBIOTYC",
+  "developerName": "Инна Кувардина",
+  "author": "Инна Кувардина",
   "homepage": "https://graceplanner.vercel.app/plugin.html",
   "repository": "https://github.com/ukraine-devs/GracePlan",
   "supportUrl": "https://graceplanner.vercel.app/plugin-support.html",
