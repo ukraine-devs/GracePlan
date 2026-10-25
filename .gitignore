@@ -1,1 +1,5 @@
-.vercel
+node_modules/
+dist/
+.vercel/
+har.zip
+.DS_Store
