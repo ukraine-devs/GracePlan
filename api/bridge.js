@@ -3,6 +3,21 @@ export const config = { runtime: "nodejs", maxDuration: 300 };
 
 const RELAY = process.env.GRACE_RELAY_URL || "http://129.159.218.87:8899";
 
+// A short connection drop between Vercel and the OCI box used to surface as a
+// hard "fetch failed". Retry connection-level failures once before giving up.
+async function relayFetch(url, options, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+    }
+  }
+  throw lastError;
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -10,7 +25,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method === "GET" && (req.query.action === "state" || req.url.includes("state"))) {
     try {
-      const upstream = await fetch(RELAY + "/state", { signal: AbortSignal.timeout(15000) });
+      const upstream = await relayFetch(RELAY + "/state", { signal: AbortSignal.timeout(15000) });
       const text = await upstream.text();
       res.setHeader("Content-Type", "application/json");
       return res.status(upstream.status).send(text);
@@ -27,7 +42,7 @@ export default async function handler(req, res) {
   if (!endpoint) return res.status(400).json({ error: "Unknown action: " + action });
 
   try {
-    const upstream = await fetch(RELAY + endpoint, {
+    const upstream = await relayFetch(RELAY + endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body,
