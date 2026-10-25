@@ -205,25 +205,57 @@ function App() {
     } catch { setError("Историю не удалось сохранить в браузере."); }
   }, [chats]);
   useEffect(() => { if (activeChat?.id) localStorage.setItem(ACTIVE_KEY, activeChat.id); }, [activeChat?.id]);
-  // Keep paired chats in sync with the server-side ChatGPT twin.
+  // Keep the site in step with the server: restore replies lost to bridge
+  // errors, and surface every Grace Planner conversation that exists on the
+  // ChatGPT side, including chats created by hand.
+  const isSendingRef = React.useRef(false);
+  useEffect(() => { isSendingRef.current = isSending; }, [isSending]);
+  const activeIdRef = React.useRef(activeChat?.id || null);
+  useEffect(() => { activeIdRef.current = activeChat?.id || null; }, [activeChat?.id]);
+  const mergeServerChats = (serverChats) => {
+    setChats((current) => {
+      let next = current.map((c) => ({ ...c }));
+      let changed = false;
+      for (const twin of serverChats || []) {
+        if (!twin?.gptId) continue;
+        const remote = (twin.messages || []).map((m) => ({ id: crypto.randomUUID(), role: m.role === "user" ? "user" : "assistant", content: m.content }));
+        const idx = next.findIndex((c) => c.gptId === twin.gptId);
+        if (idx === -1) {
+          if (!remote.length) continue;
+          next = [{ id: crypto.randomUUID(), title: twin.title || "Grace Planner chat", messages: [welcome, ...remote], createdAt: twin.updatedAt || Date.now(), gptId: twin.gptId, gptUrl: twin.url }, ...next];
+          changed = true;
+          continue;
+        }
+        const chat = next[idx];
+        if (remote.length) next[idx] = { ...chat, gptMessages: remote, gptUrl: chat.gptUrl || twin.url };
+        const localMessages = chat.messages || [];
+        const hasAssistant = localMessages.some((m) => m.role === "assistant" && !/Не удалось/i.test(m.content || ""));
+        const busy = isSendingRef.current && activeIdRef.current === chat.id;
+        if (remote.length && !busy && !hasAssistant) {
+          next[idx] = { ...next[idx], messages: [welcome, ...remote] };
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  };
   useEffect(() => {
     let live = true;
-    const pull = async () => {
+    const pullState = async () => {
       const gptState = await bridgeState();
-      if (!live || !gptState?.chats?.length) return;
-      setChats((current) => current.map((chat) => {
-        const twin = gptState.chats.find((c) => c.gptId === chat.gptId);
-        if (!twin?.messages?.length) return chat;
-        const localTexts = chat.messages.map((m) => m.role + ":" + m.content.slice(0, 120)).join("|");
-        const remoteTexts = twin.messages.map((m) => m.role + ":" + m.content.slice(0, 120)).join("|");
-        if (localTexts === remoteTexts) return chat;
-        const messages = twin.messages.map((m, i) => ({ id: (chat.id + "-" + i), role: m.role === "user" ? "user" : "assistant", content: m.content }));
-        return { ...chat, gptMessages: twin.messages, gptSyncDiff: localTexts !== remoteTexts };
-      }));
+      if (live && gptState?.chats?.length) mergeServerChats(gptState.chats);
     };
-    const timer = window.setInterval(pull, 25000);
-    pull();
-    return () => { live = false; window.clearInterval(timer); };
+    const pullSync = async () => {
+      try {
+        const synced = await bridgeFetch("sync", {}, 180000);
+        if (live && synced?.chats?.length) mergeServerChats(synced.chats);
+      } catch {}
+    };
+    pullState();
+    pullSync();
+    const timerState = window.setInterval(pullState, 25000);
+    const timerSync = window.setInterval(pullSync, 90000);
+    return () => { live = false; window.clearInterval(timerState); window.clearInterval(timerSync); };
   }, []);
   useEffect(() => { const timer = window.setTimeout(() => setShowStatus(false), 5500); return () => window.clearTimeout(timer); }, []);
   useEffect(() => () => attachmentPreviews.forEach((item) => URL.revokeObjectURL(item.url)), [attachmentPreviews]);
