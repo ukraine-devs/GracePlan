@@ -62,6 +62,39 @@ async function hydrateArtifacts(chats) {
 }
 
 function createChat() { return { id: crypto.randomUUID(), title: "New chat", messages: [welcome], createdAt: Date.now() }; }
+
+// ---- Grace Bridge: site <-> server-side ChatGPT (Instant) channel ----
+function bridgeFetch(action, payload, timeoutMs = 300000) {
+  return fetch("/api/bridge?action=" + action, {
+    method: action === "state" ? "GET" : "POST",
+    headers: action === "state" ? undefined : { "Content-Type": "application/json" },
+    body: action === "state" ? undefined : JSON.stringify(payload),
+    signal: AbortSignal.timeout(timeoutMs),
+  }).then(async (response) => {
+    const data = await response.json().catch(() => ({ error: "Bad bridge response" }));
+    if (!response.ok || data.error) throw new Error(data.error || "Bridge error " + response.status);
+    return data;
+  });
+}
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Не удалось прочитать файл: " + file.name));
+    reader.readAsDataURL(file);
+  });
+}
+async function bridgeNewChat(siteChatId, title) {
+  return bridgeFetch("new", { siteChatId, title, text: "Новый чат Grace Planner из приложения. Плагин GracePlanner активен. Подтверди одним словом: готов." });
+}
+async function bridgeSend(gptId, text, files) {
+  const prepared = [];
+  for (const file of files) prepared.push({ name: file.relativePath || file.name, mime: file.type, data: await readFileAsDataUrl(file) });
+  return bridgeFetch("send", { gptId, text, files: prepared });
+}
+async function bridgeState() {
+  try { return await bridgeFetch("state", null, 15000); } catch { return null; }
+}
 function normalizeMessages(messages) {
   return (Array.isArray(messages) ? messages : []).filter((message) => message.content !== "Команда уже показана. Ожидаю новые данные.");
 }
@@ -170,6 +203,26 @@ function App() {
     } catch { setError("Историю не удалось сохранить в браузере."); }
   }, [chats]);
   useEffect(() => { if (activeChat?.id) localStorage.setItem(ACTIVE_KEY, activeChat.id); }, [activeChat?.id]);
+  // Keep paired chats in sync with the server-side ChatGPT twin.
+  useEffect(() => {
+    let live = true;
+    const pull = async () => {
+      const gptState = await bridgeState();
+      if (!live || !gptState?.chats?.length) return;
+      setChats((current) => current.map((chat) => {
+        const twin = gptState.chats.find((c) => c.gptId === chat.gptId);
+        if (!twin?.messages?.length) return chat;
+        const localTexts = chat.messages.map((m) => m.role + ":" + m.content.slice(0, 120)).join("|");
+        const remoteTexts = twin.messages.map((m) => m.role + ":" + m.content.slice(0, 120)).join("|");
+        if (localTexts === remoteTexts) return chat;
+        const messages = twin.messages.map((m, i) => ({ id: (chat.id + "-" + i), role: m.role === "user" ? "user" : "assistant", content: m.content }));
+        return { ...chat, gptMessages: twin.messages, gptSyncDiff: localTexts !== remoteTexts };
+      }));
+    };
+    const timer = window.setInterval(pull, 25000);
+    pull();
+    return () => { live = false; window.clearInterval(timer); };
+  }, []);
   useEffect(() => { const timer = window.setTimeout(() => setShowStatus(false), 5500); return () => window.clearTimeout(timer); }, []);
   useEffect(() => () => attachmentPreviews.forEach((item) => URL.revokeObjectURL(item.url)), [attachmentPreviews]);
   useEffect(() => {
@@ -198,7 +251,14 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
   function updateActiveChat(updater) { setChats((current) => current.map((chat) => (chat.id === activeChat.id ? updater(chat) : chat))); }
-  function newChat() { const chat = createChat(); setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]); }
+  function newChat() {
+    const chat = createChat();
+    setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]);
+    // Server-side ChatGPT (Instant) twin chat in the Grace Planner project.
+    bridgeNewChat(chat.id, chat.title).then((result) => {
+      setChats((current) => current.map((item) => item.id === chat.id ? { ...item, gptId: result.gptId, gptUrl: result.url } : item));
+    }).catch((err) => setError("Мост ChatGPT: " + err.message));
+  }
   function renameChat(chatId, title) {
     setChats((current) => current.map((chat) => chat.id === chatId ? { ...chat, title: title.slice(0, 80) || "New chat" } : chat));
   }
@@ -328,6 +388,26 @@ function App() {
     setProgressPreviews([]); setRunLog([]);
     const actualExecution = createExecutionLog(setRunLog);
     const stage = actualExecution.stage;
+    // Server-side ChatGPT channel: chat paired with the Grace Planner project.
+    if (activeChat.gptId) {
+      try {
+        stage("bridge", "Отправка в ChatGPT (сервер)");
+        setCurrentStep(4);
+        const result = await bridgeSend(activeChat.gptId, text, submittedFiles);
+        stage("bridge", "Ответ ChatGPT получен", "done");
+        const replyId = crypto.randomUUID();
+        const gptState = await bridgeState().catch(() => null);
+        const twin = gptState?.chats?.find((c) => c.gptId === activeChat.gptId);
+        writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] }));
+        setChats((current) => current.map((item) => item.id === chatId ? { ...item, gptMessages: twin?.messages || result.messages } : item));
+      } catch (bridgeError) {
+        setError("Мост ChatGPT: " + bridgeError.message);
+        writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось отправить в ChatGPT на сервере: " + bridgeError.message }] }));
+      } finally {
+        setCurrentStep(-1); setIsSending(false); setProgressPreviews([]);
+      }
+      return;
+    }
     const userArtifacts = [];
     try {
       const photoObservations = [];
