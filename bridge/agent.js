@@ -3,6 +3,7 @@ import http from "node:http";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import WebSocket from "ws";
+import { execFileSync } from "node:child_process";
 
 const CDP_HOST = "localhost:9222";
 const PROJECT_URL = "https://chatgpt.com/g/g-p-6ade243a41e48191b297ec2ac5c7e822-grace-planner/project";
@@ -15,6 +16,7 @@ let state = { chats: [] };
 try { state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); } catch {}
 const save = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const withTimeout = (promise, ms, fallback = null) => Promise.race([promise.catch(() => fallback), sleep(ms).then(() => fallback)]);
 const dbg = (msg) => { try { fs.appendFileSync("/tmp/agent.log", new Date().toISOString() + " " + msg + "\n"); } catch {} };
 
 // ---------- raw CDP client ----------
@@ -31,7 +33,7 @@ class CdpSession {
   constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); this.handlers = new Map();
     ws.on("message", (raw) => { const msg = JSON.parse(raw);
       if (msg.id && this.pending.has(msg.id)) { const { resolve, reject } = this.pending.get(msg.id); this.pending.delete(msg.id); msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result); }
-      else if (msg.method && this.handlers.has(msg.method)) this.handlers.get(msg.method)(msg.params); });
+      else if (msg.method && this.handlers.has(msg.method)) this.handlers.get(msg.method)(msg.params, msg.sessionId); });
     ws.on("close", () => { for (const { reject } of this.pending.values()) reject(new Error("CDP closed")); }); }
   static async open(wsUrl) { const ws = new WebSocket(wsUrl, { maxPayload: 256 * 1024 * 1024 }); await new Promise((res, rej) => { ws.once("open", res); ws.once("error", rej); }); return new CdpSession(ws); }
   send(method, params = {}, sessionId) { const id = ++this.id; return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); this.ws.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params })); }); }
@@ -53,6 +55,7 @@ async function openTab(url) {
   await browser.send("Target.activateTarget", { targetId }).catch(() => {});
   const session = {
     send: (method, params = {}) => browser.send(method, params, sessionId),
+    on: (method, fn) => browser.on(method, (params, sid) => { if (sid === sessionId) fn(params); }),
     close: async () => {
       try { await browser.send("Target.closeTarget", { targetId }); } catch {}
       try { browser.close(); } catch {}
@@ -62,7 +65,13 @@ async function openTab(url) {
   return { session, targetId };
 }
 
-async function closeTab(session) { try { await session.close(); } catch {} }
+async function closeTab(session) {
+  try {
+    const pages = (await cdpList()).filter((t) => t.type === "page");
+    if (pages.length <= 1) return;
+    await session.close();
+  } catch {}
+}
 
 async function evaluate(session, expression, awaitPromise = true) {
   const r = await session.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise });
@@ -98,20 +107,63 @@ async function saveUploads(files) {
   return paths;
 }
 
-async function uploadFiles(session, paths) {
-  if (!paths.length) return;
-  const { root } = await session.send("DOM.getDocument", {});
-  const { nodeId } = await session.send("DOM.querySelector", { nodeId: root.nodeId, selector: 'input[type="file"]' });
-  if (!nodeId) throw new Error("file input not found");
-  await session.send("DOM.setFileInputFiles", { files: paths, nodeId });
-  // wait for upload chips to settle
-  const deadline = Date.now() + 120000;
-  while (Date.now() < deadline) {
-    const busy = await evaluate(session, `!!document.querySelector('[data-testid="file-progress"]')`);
-    if (!busy) break;
-    await sleep(2000);
+// Attach files through the real GTK file dialog: the page opens it, xdotool
+// types the path. Synthetic drop/paste and file-input injection are ignored by
+// the current ChatGPT composer.
+const XENV = { ...process.env, DISPLAY: ":1", XAUTHORITY: "/home/ubuntu/.Xauthority" };
+function xd(args) {
+  try { execFileSync("xdotool", args, { env: XENV, timeout: 8000 }); return true; }
+  catch (e) { dbg("xdotool failed: " + e.message); return false; }
+}
+
+async function openAttachDialog(session) {
+  const clicked = await evaluate(session, `(() => {
+    const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
+    if (el) el.focus();
+    const form = document.querySelector('form') || document;
+    const b = form.querySelector('button[aria-label="Add files and more"]');
+    if (!b) return "no-btn";
+    b.click();
+    return "ok";
+  })()`).catch(() => "err");
+  if (clicked !== "ok") return clicked;
+  for (let i = 0; i < 10; i++) {
+    await sleep(600);
+    const item = await evaluate(session, `(() => {
+      const it = [...document.querySelectorAll('button, [role="menuitem"], [role="option"]')]
+        .find((n) => /add photos\s*(&|and)\s*files/i.test((n.innerText || '') + ' ' + (n.getAttribute('aria-label') || '')));
+      if (!it) return "no-item";
+      it.click();
+      return "ok";
+    })()`).catch(() => "err");
+    if (item === "ok") return "ok";
   }
-  await sleep(1500);
+  return "no-item";
+}
+
+async function uploadFiles(session, paths) {
+  if (!paths.length) return true;
+  for (const p of paths) {
+    const name = String(p).split("/").pop();
+    const opened = await openAttachDialog(session);
+    if (!opened.endsWith("ok")) { dbg("attach dialog " + opened); return false; }
+    await sleep(2500);
+    xd(["key", "--clearmodifiers", "ctrl+l"]);
+    await sleep(600);
+    xd(["type", "--delay", "15", p]);
+    await sleep(600);
+    xd(["key", "--clearmodifiers", "Return"]);
+    let ok = false;
+    for (let i = 0; i < 10; i++) {
+      await sleep(1000);
+      ok = await evaluate(session, `((document.body.innerText || "").includes(${JSON.stringify(name)}))`).catch(() => false);
+      if (ok) break;
+    }
+    dbg("attached " + name + "=" + ok);
+    if (!ok) return false;
+    await sleep(800);
+  }
+  return true;
 }
 
 async function typeAndSend(session, text) {
@@ -235,7 +287,7 @@ async function opNewChat(body) {
     await waitComposer(session, 30000);
     const paths = await saveUploads(body.files);
     dbg("uploads " + paths.length);
-    if (paths.length) await uploadFiles(session, paths);
+    if (paths.length && !(await uploadFiles(session, paths))) throw new Error("files were not attached to the chat");
     await typeAndSend(session, body.text || body.title || "Start Grace Planner chat");
     dbg("sent");
     let gptId = null;
@@ -257,7 +309,7 @@ async function opSend(body) {
     ({ session } = await openTab("https://chatgpt.com/c/" + body.gptId));
     await waitComposer(session, 60000);
     const paths = await saveUploads(body.files);
-    if (paths.length) await uploadFiles(session, paths);
+    if (paths.length && !(await uploadFiles(session, paths))) throw new Error("files were not attached to the chat");
     await typeAndSend(session, body.text);
     const { reply, messages } = await waitReply(session, body.gptId);
     const chat = state.chats.find((c) => c.gptId === body.gptId);
