@@ -3,10 +3,11 @@ import http from "node:http";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import WebSocket from "ws";
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 
 const CDP_HOST = "localhost:9222";
 const PROJECT_URL = "https://chatgpt.com/g/g-p-6ade243a41e48191b297ec2ac5c7e822-grace-planner/project";
+const GIZMO_ID = "g-p-6ade243a41e48191b297ec2ac5c7e822-grace-planner";
 const PORT = 8899;
 const STATE_FILE = "/opt/grace-bridge/state.json";
 const UPLOAD_DIR = "/opt/grace-bridge/uploads";
@@ -102,7 +103,20 @@ async function saveUploads(files) {
     const safe = String(f.name || "file").replace(/[^a-zA-Z0-9._-]/g, "_");
     const p = `${UPLOAD_DIR}/${crypto.randomUUID().slice(0, 8)}_${safe}`;
     fs.writeFileSync(p, Buffer.from(String(f.data).split(",").pop(), "base64"));
-    paths.push(p);
+    if (/\.zip$/i.test(p)) {
+      const dir = `${UPLOAD_DIR}/${crypto.randomUUID().slice(0, 8)}_zip`;
+      fs.mkdirSync(dir, { recursive: true });
+      try {
+        execFileSync("python3", ["-m", "zipfile", "-e", p, dir], { timeout: 30000 });
+        const inner = [];
+        const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const fp = `${d}/${e.name}`; if (e.isDirectory()) walk(fp); else if (!/__MACOSX/i.test(fp) && /\.(png|jpe?g|webp|pdf|txt)$/i.test(fp)) inner.push(fp); } };
+        walk(dir);
+        inner.sort().slice(0, 10).forEach((fp) => paths.push(fp));
+        dbg("zip unpacked " + inner.length + " files from " + safe);
+      } catch (e) { dbg("zip unpack failed: " + e.message); paths.push(p); }
+    } else {
+      paths.push(p);
+    }
   }
   return paths;
 }
@@ -127,7 +141,12 @@ async function openAttachDialog(session) {
     return "ok";
   })()`).catch(() => "err");
   if (clicked !== "ok") return clicked;
-  for (let i = 0; i < 10; i++) {
+  let plusClicks = 1;
+  for (let i = 0; i < 12; i++) {
+    if (i > 0 && i % 4 === 0 && plusClicks < 4) {
+      await evaluate(session, `(() => { const b = (document.querySelector('form') || document).querySelector('button[aria-label="Add files and more"]'); if (b) { b.click(); return true; } return false; })()`).catch(() => false);
+      plusClicks += 1;
+    }
     await sleep(600);
     const item = await evaluate(session, `(() => {
       const it = [...document.querySelectorAll('button, [role="menuitem"], [role="option"]')]
@@ -141,27 +160,47 @@ async function openAttachDialog(session) {
   return "no-item";
 }
 
+// Attach images the way a user does: put the file on the X11 clipboard and
+// press Ctrl+V through a real browser key event. Synthetic paste/drop events
+// and file-input injection are ignored by the ChatGPT composer.
+function xclipImage(path) {
+  const type = /\.png$/i.test(path) ? "image/png" : "image/jpeg";
+  try {
+    // xclip forks and keeps the pipes open, so run it detached through a shell.
+    execSync(`xclip -selection clipboard -t ${type} -i ${JSON.stringify(path)} </dev/null >/dev/null 2>&1 &`, { env: XENV, timeout: 8000, shell: "/bin/bash" });
+    return true;
+  } catch (e) { dbg("xclip failed: " + e.message); return false; }
+}
+
 async function uploadFiles(session, paths) {
   if (!paths.length) return true;
   for (const p of paths) {
     const name = String(p).split("/").pop();
-    const opened = await openAttachDialog(session);
-    if (!opened.endsWith("ok")) { dbg("attach dialog " + opened); return false; }
-    await sleep(2500);
-    xd(["key", "--clearmodifiers", "ctrl+l"]);
-    await sleep(600);
-    xd(["type", "--delay", "15", p]);
-    await sleep(600);
-    xd(["key", "--clearmodifiers", "Return"]);
-    let ok = false;
-    for (let i = 0; i < 10; i++) {
-      await sleep(1000);
-      ok = await evaluate(session, `((document.body.innerText || "").includes(${JSON.stringify(name)}))`).catch(() => false);
-      if (ok) break;
+    if (!/\.(png|jpe?g|webp)$/i.test(p)) { dbg("skip non-image " + name); continue; }
+    if (!xclipImage(p)) return false;
+    await evaluate(session, `(() => {
+      const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center' });
+      el.focus();
+      return document.activeElement === el || el.contains(document.activeElement);
+    })()`).catch(() => false);
+    await sleep(400);
+    for (const type of ["rawKeyDown", "keyUp"]) {
+      await withTimeout(session.send("Input.dispatchKeyEvent", { type, modifiers: 2, key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86 }), 5000);
     }
-    dbg("attached " + name + "=" + ok);
-    if (!ok) return false;
-    await sleep(800);
+    let ok = false;
+    for (let i = 0; i < 15; i++) {
+      await sleep(1000);
+      const seen = await evaluate(session, `(() => {
+        const text = document.body.innerText || '';
+        const thumbs = document.querySelectorAll('img[src^="blob:"]').length + document.querySelectorAll('img[src^="data:"]').length;
+        return { byName: text.includes(${JSON.stringify(name.slice(0, 16))}), thumbs };
+      })()`).catch(() => ({ byName: false, thumbs: 0 }));
+      if (seen.thumbs > 0 || seen.byName) { ok = true; dbg("pasted " + name + " (" + JSON.stringify(seen) + ")"); break; }
+    }
+    if (!ok) { dbg("paste failed for " + name); return false; }
+    await sleep(1200);
   }
   return true;
 }
@@ -279,12 +318,9 @@ async function opNewChat(body) {
     dbg("tab opened");
     await waitComposer(session, 90000);
     dbg("composer ready");
-    const clicked = await evaluate(session, `(() => {
-      const b = [...document.querySelectorAll('button')].find(x => (x.getAttribute('aria-label') || '') === 'New chat in Grace Planner');
-      if (!b) return false; b.click(); return true;
-    })()`).catch(() => false);
-    if (clicked) await sleep(1200);
-    await waitComposer(session, 30000);
+    // The project root composer starts a brand-new conversation when a message
+    // is sent, and its "+" attachment menu actually opens here. The dedicated
+    // "New chat" page did not open that menu, which broke attachments.
     const paths = await saveUploads(body.files);
     dbg("uploads " + paths.length);
     if (paths.length && !(await uploadFiles(session, paths))) throw new Error("files were not attached to the chat");
@@ -318,17 +354,63 @@ async function opSend(body) {
   } finally { if (session) await closeTab(session); releaseSlot(); }
 }
 
+// Sync the whole Grace Planner project: every conversation that exists on the
+// ChatGPT side (even one created by hand) shows up on the site, and chats that
+// lost their reply on the site side get their messages back from the server.
+let lastSyncAt = 0;
+let syncPromise = null;
 async function opSync(body) {
-  await slot();
-  let session = null;
-  try {
-    const url = body.gptId ? "https://chatgpt.com/c/" + body.gptId : PROJECT_URL;
-    ({ session } = await openTab(url));
-    await waitComposer(session, 60000);
-    const messages = body.gptId ? await readConversation(session, body.gptId) : [];
-    if (body.gptId) { const chat = state.chats.find((c) => c.gptId === body.gptId); if (chat) { chat.messages = messages; chat.updatedAt = Date.now(); save(); } }
-    return { ok: true, gptId: body.gptId || null, messages };
-  } finally { if (session) await closeTab(session); releaseSlot(); }
+  if (syncPromise) return syncPromise;
+  if (Date.now() - lastSyncAt < 60000 && !body.force) return { ok: true, chats: state.chats, cached: true };
+  const run = (async () => {
+    await slot();
+    let session = null;
+    try {
+      ({ session } = await openTab(PROJECT_URL));
+      await waitComposer(session, 60000);
+      const list = await evaluate(session, `(async () => {
+        const s = await (await fetch('/api/auth/session')).json();
+        if (!s.accessToken) return { error: 'no accessToken' };
+        const r = await fetch('/backend-api/conversations?gizmo_id=${GIZMO_ID}&order=updated&limit=25', { headers: { authorization: 'Bearer ' + s.accessToken } });
+        if (!r.ok) return { error: 'http ' + r.status };
+        const j = await r.json();
+        return { items: (j.items || []).map(i => ({ gptId: i.id, title: i.title, updateTime: i.update_time })) };
+      })()`);
+      if (!list || list.error) {
+        if (list && /429/.test(list.error)) { lastSyncAt = Date.now(); return { ok: true, chats: state.chats, cached: true, rateLimited: true }; }
+        throw new Error("project list failed: " + (list?.error || "empty"));
+      }
+      const byId = new Map(state.chats.map((c) => [c.gptId, c]));
+      const fresh = [];
+      for (const it of list.items || []) {
+        const known = byId.get(it.gptId);
+        if (known) {
+          if (!known.title || known.title === "New chat") known.title = it.title || known.title;
+          known.updatedAt = (it.updateTime || 0) * 1000 || known.updatedAt;
+          fresh.push(known);
+        } else {
+          const chat = { siteChatId: body.siteChatId || null, gptId: it.gptId, url: "https://chatgpt.com/c/" + it.gptId, title: it.title || "Grace Planner chat", messages: [], updatedAt: (it.updateTime || 0) * 1000 };
+          state.chats.push(chat);
+          fresh.push(chat);
+        }
+      }
+      if (body.gptId) {
+        const chat = byId.get(body.gptId);
+        if (chat) { try { chat.messages = await readConversation(session, body.gptId); chat.updatedAt = Date.now(); } catch {} }
+      }
+      let fetched = 0;
+      const pending = fresh.filter((c) => !(c.messages || []).length).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      for (const chat of pending) {
+        if (fetched >= 3) break;
+        try { chat.messages = await readConversation(session, chat.gptId); fetched += 1; } catch {}
+      }
+      lastSyncAt = Date.now();
+      save();
+      return { ok: true, chats: state.chats };
+    } finally { if (session) await closeTab(session); releaseSlot(); }
+  })();
+  syncPromise = run.finally(() => { syncPromise = null; });
+  return syncPromise;
 }
 
 function opList() { return { ok: true, chats: state.chats }; }
