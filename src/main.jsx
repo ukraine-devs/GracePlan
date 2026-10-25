@@ -289,6 +289,12 @@ function App() {
     const chat = createChat();
     setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]);
   }
+  function closeChat(chatId) {
+    const rest = chats.filter((chat) => chat.id !== chatId);
+    const list = rest.length ? rest : [createChat()];
+    setChats(list);
+    if (chatId === activeChat.id) setActiveChatId(list[0].id);
+  }
   function renameChat(chatId, title) {
     setChats((current) => current.map((chat) => chat.id === chatId ? { ...chat, title: title.slice(0, 80) || "New chat" } : chat));
   }
@@ -603,7 +609,12 @@ function App() {
     <main className="app-shell"><section className="chat-panel" aria-label="Grace Planner chat">
       <header className="topbar"><div className="brand-row"><div className="brand-text" aria-label="Grace AI Planner">Grace AI Planner</div></div>
         <button className="icon-button chat-manager-button" type="button" onClick={() => setChatManagerOpen(true)} aria-label="All chats" title="All chats"><Menu size={18} /></button>
-        <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => <button className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} type="button" onClick={() => setActiveChatId(chat.id)}>{chat.title}</button>)}</nav>
+        <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => (
+          <div className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} role="tab" aria-selected={chat.id === activeChat.id} tabIndex={0} onClick={() => setActiveChatId(chat.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setActiveChatId(chat.id); } }}>
+            <span className="chat-tab-title">{chat.title}</span>
+            <button className="chat-tab-close" type="button" aria-label={"Закрыть вкладку: " + chat.title} onClick={(e) => { e.stopPropagation(); closeChat(chat.id); }}>×</button>
+          </div>
+        ))}</nav>
         <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><span className={`agent-indicator ${agentState}`} role="status" aria-label={`Agent status: ${agentState}`} title={`Activity: ${agentState}. Animated UI indicator, not hidden model reasoning.`} /></div>
       </header>
       <div className="messages" aria-live="polite" ref={messagesRef}>
