@@ -84,8 +84,10 @@ function readFileAsDataUrl(file) {
     reader.readAsDataURL(file);
   });
 }
-async function bridgeNewChat(siteChatId, title) {
-  return bridgeFetch("new", { siteChatId, title, text: "Новый чат Grace Planner из приложения. Плагин GracePlanner активен. Подтверди одним словом: готов." });
+async function bridgeNewChat(siteChatId, title, text, files) {
+  const prepared = [];
+  for (const file of files || []) prepared.push({ name: file.relativePath || file.name, mime: file.type, data: await readFileAsDataUrl(file) });
+  return bridgeFetch("new", { siteChatId, title, text, files: prepared });
 }
 async function bridgeSend(gptId, text, files) {
   const prepared = [];
@@ -254,10 +256,6 @@ function App() {
   function newChat() {
     const chat = createChat();
     setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]);
-    // Server-side ChatGPT (Instant) twin chat in the Grace Planner project.
-    bridgeNewChat(chat.id, chat.title).then((result) => {
-      setChats((current) => current.map((item) => item.id === chat.id ? { ...item, gptId: result.gptId, gptUrl: result.url } : item));
-    }).catch((err) => setError("Мост ChatGPT: " + err.message));
   }
   function renameChat(chatId, title) {
     setChats((current) => current.map((chat) => chat.id === chatId ? { ...chat, title: title.slice(0, 80) || "New chat" } : chat));
@@ -388,21 +386,31 @@ function App() {
     setProgressPreviews([]); setRunLog([]);
     const actualExecution = createExecutionLog(setRunLog);
     const stage = actualExecution.stage;
-    // Server-side ChatGPT channel: chat paired with the Grace Planner project.
-    if (activeChat.gptId) {
+    // Every chat runs on the server-side ChatGPT channel, so the site does not
+    // depend on OpenAI API credits. The twin chat is created on the first message.
+    {
       try {
-        stage("bridge", "Отправка в ChatGPT (сервер)");
+        let gptId = activeChat.gptId;
+        let result;
         setCurrentStep(4);
-        const result = await bridgeSend(activeChat.gptId, text, submittedFiles);
+        if (gptId) {
+          stage("bridge", "Отправка в ChatGPT (сервер)");
+          result = await bridgeSend(gptId, text, submittedFiles);
+        } else {
+          stage("bridge", "Создаю чат в Grace Planner (ChatGPT)");
+          result = await bridgeNewChat(chatId, activeChat.title, text || "Please review the attached files.", submittedFiles);
+          gptId = result.gptId;
+          writeChat((chat) => ({ ...chat, gptId: gptId, gptUrl: result.url }));
+        }
         stage("bridge", "Ответ ChatGPT получен", "done");
         const replyId = crypto.randomUUID();
         const gptState = await bridgeState().catch(() => null);
-        const twin = gptState?.chats?.find((c) => c.gptId === activeChat.gptId);
-        writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] }));
+        const twin = gptState?.chats?.find((c) => c.gptId === gptId);
+        writeChat((chat) => ({ ...chat, gptId: gptId, messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] }));
         setChats((current) => current.map((item) => item.id === chatId ? { ...item, gptMessages: twin?.messages || result.messages } : item));
       } catch (bridgeError) {
         setError("Мост ChatGPT: " + bridgeError.message);
-        writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось отправить в ChatGPT на сервере: " + bridgeError.message }] }));
+        writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось получить ответ ChatGPT: " + bridgeError.message }] }));
       } finally {
         setCurrentStep(-1); setIsSending(false); setProgressPreviews([]);
       }
