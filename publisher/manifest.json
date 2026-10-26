@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Grace Planner → ChatGPT project",
+  "version": "0.3.0",
+  "description": "Публикует чат Grace Planner в проект ChatGPT того аккаунта, в котором вы вошли.",
+  "permissions": ["storage", "tabs", "activeTab"],
+  "host_permissions": ["https://graceplanner.vercel.app/*", "https://chatgpt.com/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "Опубликовать чат в ChatGPT" },
+  "content_scripts": [
+    { "matches": ["https://graceplanner.vercel.app/*"], "js": ["site.js"], "run_at": "document_idle" },
+    { "matches": ["https://chatgpt.com/*"], "js": ["chatgpt.js"], "run_at": "document_idle" }
+  ]
+}

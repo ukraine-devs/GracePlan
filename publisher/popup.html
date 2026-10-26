@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root { color-scheme: light; }
+    body { width: 340px; margin: 0; padding: 14px; font: 13px/1.45 -apple-system, Segoe UI, Roboto, sans-serif; color: #1d2430; }
+    h1 { font-size: 14px; margin: 0 0 4px; }
+    p { margin: 0 0 10px; color: #5a6472; }
+    label { display: block; font-weight: 600; margin: 10px 0 4px; }
+    input { width: 100%; box-sizing: border-box; padding: 7px 8px; border: 1px solid #d5dbe4; border-radius: 8px; font: inherit; }
+    button { width: 100%; margin-top: 12px; padding: 9px 10px; border: 0; border-radius: 9px; background: #2563eb; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+    #status { margin-top: 10px; min-height: 34px; white-space: pre-wrap; }
+    #status.ok { color: #17794a; }
+    #status.err { color: #b3261e; }
+    a { color: #2563eb; }
+    code { background: #f1f4f9; padding: 1px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Grace Planner → проект ChatGPT</h1>
+  <p>Публикует активный чат сайта в проект того аккаунта, где вы вошли в ChatGPT.</p>
+  <label for="project">Страница проекта</label>
+  <input id="project" type="url" spellcheck="false" />
+  <button id="go" type="button">Опубликовать активный чат</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
