@@ -144,7 +144,31 @@ async function prepareImage(file) {
   const originalSha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
   const bitmap = await createImageBitmap(file);
   try {
-    const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    const isPlan = /plan|план|креслен|drawing/i.test(file.name);
+    // Vercel refuses a function request above 4.5 MB, and one request carries
+    // the plan plus every photo of the proposal. Encode the largest picture that
+    // still fits: sharpness matters, a failed upload matters more.
+    const fit = (canvas, mime, quality, cap) => {
+      const attempt = (source) => mime === "image/png" ? source.toDataURL("image/png") : source.toDataURL("image/jpeg", quality);
+      let data = attempt(canvas);
+      if (data.length <= cap) return data;
+      const smaller = document.createElement("canvas");
+      const scaleDown = (factor) => {
+        smaller.width = Math.max(1, Math.round(canvas.width * factor));
+        smaller.height = Math.max(1, Math.round(canvas.height * factor));
+        const context = smaller.getContext("2d");
+        context.fillStyle = "#fff";
+        context.fillRect(0, 0, smaller.width, smaller.height);
+        context.drawImage(canvas, 0, 0, smaller.width, smaller.height);
+        return attempt(smaller);
+      };
+      for (const factor of [0.85, 0.7, 0.55]) {
+        data = scaleDown(factor);
+        if (data.length <= cap) return data;
+      }
+      return data;
+    };
+    const scale = Math.min(1, 1500 / Math.max(bitmap.width, bitmap.height));
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(bitmap.width * scale));
     canvas.height = Math.max(1, Math.round(bitmap.height * scale));
@@ -152,10 +176,9 @@ async function prepareImage(file) {
     context.fillStyle = "#fff";
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    // A lossless analysis derivative keeps thin lines more legible. The original
-    // is independently retained and is the only image used on the PDF source plan.
-    const data = /plan|план|креслен|drawing/i.test(file.name) ? canvas.toDataURL("image/png") : canvas.toDataURL("image/jpeg", 0.86);
-    if (data.length > 3_800_000) throw new Error("Снимок слишком большой после подготовки: " + file.name);
+    // A floor plan keeps thin lines only in PNG; photos are JPEG. Both are capped
+    // so that five photos plus the plan stay inside one Vercel request.
+    const data = isPlan ? fit(canvas, "image/png", 1, 900_000) : fit(canvas, "image/jpeg", 0.8, 450_000);
     return { name: file.name, data, originalSha256 };
   } finally { bitmap.close(); }
 }
@@ -314,7 +337,9 @@ function App() {
         if (!twin) continue;
         localOnly.delete(chat.id);
         used.add(twin.gptId);
-        const remote = (twin.messages || []).map((m) => ({ id: crypto.randomUUID(), role: m.role === "user" ? "user" : "assistant", content: m.content }));
+        // Attachments travel with the server transcript: without them the photos sent
+        // from this site disappear from the chat as soon as the list is refreshed.
+        const remote = (twin.messages || []).map((m) => ({ id: crypto.randomUUID(), role: m.role === "user" ? "user" : "assistant", content: m.content, artifacts: m.artifacts }));
         const localContent = (chat.messages || []).slice(1);
         const localHasAssistant = localContent.some((m) => m.role === "assistant" && !/Не удалось/i.test(m.content || ""));
         const busy = busyId === chat.id;
@@ -336,7 +361,9 @@ function App() {
       for (const twin of serverChats || []) {
         if (!twin?.gptId || used.has(twin.gptId)) continue;
         used.add(twin.gptId);
-        const remote = (twin.messages || []).map((m) => ({ id: crypto.randomUUID(), role: m.role === "user" ? "user" : "assistant", content: m.content }));
+        // Attachments travel with the server transcript: without them the photos sent
+        // from this site disappear from the chat as soon as the list is refreshed.
+        const remote = (twin.messages || []).map((m) => ({ id: crypto.randomUUID(), role: m.role === "user" ? "user" : "assistant", content: m.content, artifacts: m.artifacts }));
         if (!remote.length) continue;
         result.push({ id: crypto.randomUUID(), title: twin.title || "Grace Planner chat", messages: [welcome, ...remote], createdAt: twin.updatedAt || Date.now(), gptId: twin.gptId, gptUrl: twin.url, updatedAt: twin.updatedAt || Date.now() });
       }

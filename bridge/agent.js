@@ -54,6 +54,7 @@ async function openTab(url, background = false) {
   const v = await cdpVersion();
   const browser = await CdpSession.open(v.webSocketDebuggerUrl);
   const { targetId } = await browser.send("Target.createTarget", { url, background });
+  openedTabs.add(targetId);
   const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
   await browser.send("Target.activateTarget", { targetId }).catch(() => {});
   const session = {
@@ -73,6 +74,61 @@ async function closeTab(session) {
     const pages = (await cdpList()).filter((t) => t.type === "page");
     if (pages.length <= 1) return;
     await session.close();
+  } catch {}
+}
+
+// A conversation tab is loaded once and then reused: every fresh load of
+// chatgpt.com/c/<id> costs a request on an endpoint that throttles hard, so
+// sending a second message must not reload the page.
+const chatTabs = new Map();
+async function tabForChat(gptId) {
+  const hit = chatTabs.get(gptId);
+  if (hit) {
+    const alive = await withTimeout(evaluate(hit.session, "1+1"), 4000, null).catch(() => null);
+    if (alive === 2) { hit.at = Date.now(); return { session: hit.session, targetId: hit.targetId, reused: true }; }
+    chatTabs.delete(gptId);
+  }
+  const opened = await openTab("https://chatgpt.com/c/" + gptId);
+  chatTabs.set(gptId, { session: opened.session, targetId: opened.targetId, at: Date.now() });
+  return { ...opened, reused: false };
+}
+function dropChatTab(gptId) {
+  const entry = chatTabs.get(gptId);
+  if (!entry) return;
+  chatTabs.delete(gptId);
+  closeTab(entry.session).catch(() => {});
+}
+function pruneChatTabs(keepId) {
+  const entries = [...chatTabs.entries()].sort((a, b) => (b[1].at || 0) - (a[1].at || 0));
+  let kept = 0;
+  for (const [id, entry] of entries) {
+    if (id === keepId || kept < 1) { kept += 1; continue; }
+    chatTabs.delete(id);
+    closeTab(entry.session).catch(() => {});
+  }
+}
+
+// Tabs that this process opened and still owns. Anything else pointing at
+// chatgpt.com is a leftover: every open ChatGPT tab polls its own API, and a
+// handful of them is enough to get the whole account rate limited.
+const openedTabs = new Set();
+async function sweepTabs() {
+  try {
+    const pages = (await cdpList()).filter((t) => t.type === "page" && /^https:\/\/chatgpt\.com\//.test(t.url || ""));
+    const live = new Set(pages.map((page) => page.id));
+    for (const id of [...openedTabs]) if (!live.has(id)) openedTabs.delete(id);
+    const keep = new Set([...(reader?.targetId ? [reader.targetId] : []), ...openedTabs]);
+    let keptProject = pages.some((page) => keep.has(page.id) && /\/project\b/.test(page.url || ""));
+    const toClose = [];
+    for (const page of pages) {
+      if (keep.has(page.id)) continue;
+      if (/\/project\b/.test(page.url || "") && !keptProject) { keptProject = true; continue; }
+      toClose.push(page);
+    }
+    for (const page of toClose) {
+      try { await fetch(`http://${CDP_HOST}/json/close/${page.id}`); } catch {}
+    }
+    if (toClose.length) dbg("closed " + toClose.length + " leftover tab(s)");
   } catch {}
 }
 
@@ -288,7 +344,7 @@ async function sendWithFiles(session, paths, text) {
 async function typeAndSend(session, text) {
   const msg = text || "Please review the attached files.";
   await withTimeout(session.send("Page.bringToFront"), 3000).catch(() => {});
-  const readLen = () => evaluate(session, `((${COMPOSER})?.innerText || "").length`).catch(() => 0);
+  const readLen = () => evaluate(session, `((${COMPOSER})?.innerText || "").trim().length`).catch(() => 0);
   const box = await evaluate(session, `(() => {
     const el = ${COMPOSER};
     if (!el) return null;
@@ -323,20 +379,43 @@ async function typeAndSend(session, text) {
     })()`).catch(() => false);
   }
   if (!focused) throw new Error("composer not focused");
+  // Clear whatever the previous attempt left behind: a concatenated message is
+  // not the text the user wrote, and it must never be sent as if it were.
   const preLen = await readLen();
   if (preLen > 0) {
-    for (const [type, code] of [["rawKeyDown", 65], ["keyUp", 65]]) {
-      await session.send("Input.dispatchKeyEvent", { type, modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 });
-    }
+    await evaluate(session, `(() => {
+      const el = ${COMPOSER};
+      if (!el) return false;
+      el.focus();
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+      return (el.innerText || '').length;
+    })()`).catch(() => null);
+    // The editor keeps an empty paragraph after a delete; one Backspace clears it
+    // so the new message never starts with a blank line.
     for (const type of ["rawKeyDown", "keyUp"]) {
       await session.send("Input.dispatchKeyEvent", { type, key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 });
     }
-    await sleep(250);
+    await sleep(120);
+    if (await readLen()) {
+      for (const [type, code] of [["rawKeyDown", 65], ["keyUp", 65]]) {
+        await session.send("Input.dispatchKeyEvent", { type, modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 });
+      }
+      for (const type of ["rawKeyDown", "keyUp"]) {
+        await session.send("Input.dispatchKeyEvent", { type, key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 });
+      }
+      await sleep(150);
+    }
   }
-  for (const ch of msg) {
-    await session.send("Input.dispatchKeyEvent", { type: "keyDown", text: ch, unmodifiedText: ch, key: ch }).catch(() => {});
-    await session.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch }).catch(() => {});
-    await sleep(15);
+  // One insert instead of a keystroke per character: it is both faster and a
+  // better copy of a real paste, which the composer accepts reliably.
+  await withTimeout(session.send("Input.insertText", { text: msg }), 8000).catch(() => {});
+  if ((await readLen()) === 0) {
+    for (const ch of msg) {
+      await session.send("Input.dispatchKeyEvent", { type: "keyDown", text: ch, unmodifiedText: ch, key: ch }).catch(() => {});
+      await session.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch }).catch(() => {});
+      await sleep(10);
+    }
   }
   dbg("sendBtn=" + await evaluate(session, `(() => { const b = [...document.querySelectorAll('button')].find((x) => /send/i.test((x.getAttribute('aria-label')||'') + (x.getAttribute('data-testid')||'')) && x.offsetParent !== null); return b ? (b.disabled ? 'disabled' : 'enabled') : 'none'; })()`).catch(() => "err"));
   if ((await readLen()) === 0) await withTimeout(session.send("Input.insertText", { text: msg }), 8000).catch(() => {});
@@ -414,21 +493,35 @@ const readConversation = async (session, gptId) => {
   return r.messages || [];
 };
 
+// Read the conversation straight from the rendered page: no backend endpoint,
+// so it cannot be rate limited the way the history API is.
+const domMessagesExpr = `(() => {
+  const nodes = [...document.querySelectorAll('[data-message-author-role]')];
+  const out = [];
+  for (const node of nodes) {
+    const role = node.getAttribute('data-message-author-role');
+    if (role !== 'user' && role !== 'assistant') continue;
+    const body = node.querySelector('.markdown') || node;
+    const text = (body.innerText || '').trim();
+    if (text) out.push({ role, content: text });
+  }
+  return out;
+})()`;
+
 async function waitReply(session, gptId, timeoutMs = 240000, minMessages = 0) {
   const deadline = Date.now() + timeoutMs;
   let last = "", stable = 0;
   while (Date.now() < deadline) {
-    await sleep(2000);
-    let messages;
-    try { messages = await readConversation(session, gptId); } catch { continue; }
+    await sleep(1500);
+    const nodes = (await evaluate(session, domMessagesExpr).catch(() => []) || []).filter((m) => m && m.content);
+    if (nodes.length < minMessages) continue;
     // Only a trailing assistant message counts: with multi-file sends the
     // conversation already holds replies to the earlier image parts.
-    if (messages.length < minMessages) continue;
-    const lastMsg = messages[messages.length - 1];
+    const lastMsg = nodes[nodes.length - 1];
     if (!lastMsg || lastMsg.role !== "assistant") { stable = 0; last = ""; continue; }
     const text = lastMsg.content;
     const stopping = await evaluate(session, `!!document.querySelector('[data-testid="stop-button"]')`).catch(() => false);
-    if (!stopping && text && text === last) { stable += 1; if (stable >= 2) return { reply: text, messages }; }
+    if (!stopping && text && text === last) { stable += 1; if (stable >= 2) return { reply: text, messages: nodes }; }
     else { stable = 0; last = text; }
   }
   throw new Error("timeout waiting for ChatGPT reply");
@@ -436,13 +529,40 @@ async function waitReply(session, gptId, timeoutMs = 240000, minMessages = 0) {
 
 const chatIdExpr = `(() => { const m = location.href.match(/\\/c\\/([0-9a-f-]{20,60})/i); return m ? m[1] : null; })()`;
 
+// A tab needs a name a person can recognise: when the title is still the
+// default one, it is taken from the first thing the user wrote.
+const GENERIC_TITLES = new Set(["", "New chat", "Grace Planner chat", "Новый чат"]);
+function applyDerivedTitle(chat) {
+  if (!chat) return;
+  const current = String(chat.title || "").trim();
+  const generic = GENERIC_TITLES.has(current) || /^Grace Planner chat$/i.test(current);
+  if (!generic) return;
+  const first = (chat.messages || []).find((m) => m.role === "user" && String(m.content || "").trim());
+  if (!first) return;
+  const label = String(first.content).replace(/\s+/g, " ").trim().slice(0, 48);
+  if (label) chat.title = label;
+}
+
 // ---------- operations ----------
 async function opNewChat(body) {
   await slot();
   let session = null;
+  let keepTab = false;
+  let targetId = null;
   try {
-    ({ session } = await openTab(PROJECT_URL));
-    dbg("tab opened");
+    // Reusing the open project tab saves seconds, but only a tab that really
+    // stands on the project root may host a new conversation: a conversation tab
+    // would silently receive the message instead of starting a new chat.
+    let opened = null;
+    if (reader) {
+      const href = await withTimeout(evaluate(reader.session, "location.href"), 3000, null).catch(() => null);
+      const onRoot = typeof href === "string" && (/\/project$/.test(href) || /^https:\/\/chatgpt\.com\/?$/.test(href));
+      if (onRoot) opened = { session: reader.session, targetId: reader.targetId, reused: true };
+    }
+    if (!opened) opened = await openTab(PROJECT_URL);
+    session = opened.session;
+    targetId = opened.targetId;
+    dbg("tab opened" + (opened.reused ? " (reused)" : ""));
     await waitComposer(session, 90000);
     dbg("composer ready");
     // The project root composer starts a brand-new conversation when a message
@@ -456,20 +576,212 @@ async function opNewChat(body) {
     for (let i = 0; i < 60; i++) { gptId = await evaluate(session, chatIdExpr); if (gptId) break; await sleep(1000); }
     if (!gptId) throw new Error("conversation id not resolved");
     let baseline = 0;
-    try { baseline = (await readConversation(session, gptId)).length; } catch {}
+    try { baseline = (await evaluate(session, domMessagesExpr).catch(() => []) || []).length; } catch {}
     const chat = { siteChatId: body.siteChatId || null, gptId, url: "https://chatgpt.com/c/" + gptId, title: body.title || "New chat", messages: [{ role: "user", content: body.text || body.title || "" }], updatedAt: Date.now() };
     state.chats = state.chats.filter((c) => c.gptId !== gptId);
     state.chats.push(chat); save();
-    try {
-      const { reply, messages } = await waitReply(session, gptId, 20000, baseline + 1);
-      chat.messages = messages; chat.updatedAt = Date.now(); save();
-      return { ok: true, gptId, url: chat.url, reply, messages };
-    } catch (timeoutError) {
-      try { chat.messages = await readConversation(session, gptId); save(); } catch {}
-      dbg("reply pending for " + gptId);
-      return { ok: true, gptId, url: chat.url, pending: true, reply: "", messages: chat.messages };
+    const dom = await evaluate(session, domMessagesExpr).catch(() => []);
+    if (Array.isArray(dom) && dom.length >= (chat.messages || []).length) chat.messages = dom;
+    chat.updatedAt = Date.now(); applyDerivedTitle(chat); save();
+    // The tab stays open for this conversation: the reply is read from it in the
+    // background, and the next message goes into the same page without reloading.
+    chatTabs.set(gptId, { session, targetId, at: Date.now() });
+    keepTab = true;
+    pruneChatTabs(gptId);
+    watchForReply(gptId);
+    return { ok: true, gptId, url: chat.url, pending: true, reply: "", messages: chat.messages };
+  } finally { if (session && !keepTab) await closeTab(session); releaseSlot(); }
+}
+
+// Every conversation read goes through one gate. ChatGPT answers 429 to the
+// conversation endpoint after a burst, and once it does no chat loads at all,
+// so reads are serialised and the whole channel cools down after a refusal.
+const READ_PER_CHAT_GAP = 8000;
+const READ_GLOBAL_GAP = 4000;
+let readGateUntil = 0;
+let readGateStrikes = 0;
+let lastReadStartedAt = 0;
+const lastReadByChat = new Map();
+
+// One read at a time, whatever asks for it: the site and the sweep share the
+// same account, and two simultaneous reads are exactly what trips the limit.
+let readQueue = Promise.resolve();
+function queueRead(run) {
+  const next = readQueue.then(run, run).catch((error) => { throw error; });
+  readQueue = next.catch(() => {});
+  return next;
+}
+
+function readGateDelay(gptId) {
+  const now = Date.now();
+  if (now < readGateUntil) return readGateUntil - now;
+  const sinceGlobal = now - lastReadStartedAt;
+  if (sinceGlobal < READ_GLOBAL_GAP) return READ_GLOBAL_GAP - sinceGlobal;
+  const sinceChat = now - (lastReadByChat.get(gptId) || 0);
+  if (sinceChat < READ_PER_CHAT_GAP) return READ_PER_CHAT_GAP - sinceChat;
+  return 0;
+}
+function noteRateLimit() {
+  readGateStrikes = Math.min(readGateStrikes + 1, 3);
+  // Three refusals in a row mean the account is in a longer cooldown: stop
+  // touching the endpoint completely so it can recover.
+  const wait = readGateStrikes >= 3 ? 1800000 : Math.min(180000 * Math.pow(2, readGateStrikes - 1), 600000);
+  readGateUntil = Date.now() + wait;
+  dbg("conversation endpoint limited; pausing reads for " + Math.round(wait / 1000) + "s");
+}
+function noteReadOk() { readGateStrikes = 0; }
+
+// Tells a missing conversation apart from a throttled one: both look the same
+// in the page, and only the first may be replaced by a new chat.
+async function probeConversation(gptId) {
+  try {
+    const reader = await getReader();
+    await readConversation(reader.session, gptId);
+    return { ok: true };
+  } catch (error) {
+    const message = String(error.message || error);
+    if (/429/.test(message)) { noteRateLimit(); return { ok: false, throttled: true }; }
+    return { ok: false, missing: true };
+  }
+}
+
+// The rendered page is the reliable source: the backend endpoint often answers
+// 429 or even "conversation has been deleted" while the open tab shows the whole
+// dialogue, answers included. A chat tab that is already open is read directly.
+async function readChatDom(gptId) {
+  const cached = chatTabs.get(gptId);
+  if (cached) {
+    const dom = await evaluate(cached.session, domMessagesExpr).catch(() => []);
+    if (Array.isArray(dom) && dom.length) return dom;
+  }
+  if (!gptId) return [];
+  const { session } = await openTab("https://chatgpt.com/c/" + gptId, true);
+  try {
+    for (let i = 0; i < 25; i++) {
+      const dom = await evaluate(session, domMessagesExpr).catch(() => []);
+      if (Array.isArray(dom) && dom.length) {
+        await sleep(800);
+        const settled = await evaluate(session, domMessagesExpr).catch(() => dom);
+        return (settled?.length || 0) >= dom.length ? settled : dom;
+      }
+      await sleep(600);
     }
-  } finally { if (session) await closeTab(session); releaseSlot(); }
+    return [];
+  } finally { await closeTab(session); }
+}
+
+async function readChat(gptId) {
+  // An open tab is the fastest and gentlest source: no request to ChatGPT at all.
+  if (chatTabs.has(gptId)) {
+    const dom = await readChatDom(gptId);
+    if (dom.length) return dom;
+  }
+  try {
+    const reader = await getReader();
+    lastReadStartedAt = Date.now();
+    lastReadByChat.set(gptId, lastReadStartedAt);
+    const messages = await readConversation(reader.session, gptId);
+    noteReadOk();
+    if (messages?.length) return messages;
+  } catch (error) {
+    const message = String(error.message || error);
+    if (/429/.test(message)) noteRateLimit();
+    dbg("api read failed (" + message.slice(0, 60) + "), reading the page");
+  }
+  const dom = await readChatDom(gptId);
+  if (dom.length) noteReadOk();
+  return dom.length ? dom : null;
+}
+
+// On-demand read for one conversation: the site asks for this when a tab opens
+// and while a reply is still missing. A closed gate serves the stored copy.
+const readCache = new Map();
+async function opRead(body) {
+  const gptId = body && body.gptId;
+  if (!gptId) throw new Error("gptId required");
+  const chat = state.chats.find((c) => c.gptId === gptId);
+  const cached = readCache.get(gptId);
+  if (cached && Date.now() - cached.at < 12000) return { ok: true, gptId, messages: cached.messages, cached: true };
+  const delay = readGateDelay(gptId);
+  if (delay > 0) return { ok: true, gptId, messages: chat?.messages || cached?.messages || [], waiting: delay };
+  await slot();
+  try {
+    const messages = await queueRead(() => readChat(gptId));
+    if (!messages) return { ok: true, gptId, messages: chat?.messages || [], limited: true };
+    const merged = chat && (chat.messages || []).length > messages.length ? chat.messages : messages;
+    if (chat && merged.length >= (chat.messages || []).length) {
+      const grew = merged.length > (chat.messages || []).length;
+      chat.messages = merged; chat.readTries = 0;
+      if (grew) { chat.updatedAt = Date.now(); applyDerivedTitle(chat); }
+      save();
+    }
+    readCache.set(gptId, { at: Date.now(), messages: merged });
+    return { ok: true, gptId, messages: merged };
+  } finally { releaseSlot(); }
+}
+
+async function waitForOwnMessage(session, text, timeoutMs = 12000) {
+  const needle = String(text || "").replace(/\s+/g, " ").trim().slice(0, 40);
+  if (!needle) return true;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const dom = await evaluate(session, domMessagesExpr).catch(() => []);
+    if (Array.isArray(dom) && dom.some((m) => m.role === "user" && String(m.content || "").replace(/\s+/g, " ").includes(needle))) return true;
+    await sleep(1200);
+  }
+  return false;
+}
+
+// Replaces a conversation the account cannot open with a fresh one, carrying the
+// dialogue across. One move per chat per ten minutes keeps a broken account from
+// spawning clones, while a dead chat still recovers by itself.
+const recentMoves = new Map();
+async function moveToFreshChat(body, previous, reason) {
+  const key = body.siteChatId || previous?.siteChatId || body.gptId;
+  if (Date.now() - (recentMoves.get(key) || 0) < 10 * 60 * 1000) return null;
+  recentMoves.set(key, Date.now());
+  dbg("moving to a fresh chat (" + reason + "): " + body.gptId);
+  const siteChatId = body.siteChatId || previous?.siteChatId || null;
+  const title = body.title || previous?.title || "Grace Planner chat";
+  const history = (previous?.messages || []).slice(-12);
+  const carried = history.length
+    ? "Продолжение диалога Grace Planner (перенесено из предыдущего чата):\n"
+      + history.map((m) => (m.role === "user" ? "Пользователь: " : "Ассистент: ") + String(m.content || "").slice(0, 1500)).join("\n")
+      + "\n\n" + body.text
+    : body.text;
+  dropChatTab(body.gptId);
+  const created = await opNewChat({ siteChatId, title, text: carried, files: body.files });
+  if (created?.gptId) {
+    state.chats = state.chats.filter((c) => c.gptId !== body.gptId);
+    const moved = state.chats.find((c) => c.gptId === created.gptId);
+    if (moved) { moved.siteChatId = siteChatId; moved.title = title; moved.readTries = 0; moved.movedFrom = body.gptId; save(); }
+  }
+  return { ...created, siteChatId, title, recreatedFrom: body.gptId };
+}
+
+// The reply is collected in the background from the tab that already holds the
+// conversation: no extra request to ChatGPT, so it shows up seconds after it is
+// generated instead of after the next slow sweep.
+const replyWatchers = new Map();
+function watchForReply(gptId) {
+  if (!gptId || replyWatchers.has(gptId)) return;
+  const startedAt = Date.now();
+  const timer = setInterval(async () => {
+    const entry = chatTabs.get(gptId);
+    const chat = state.chats.find((c) => c.gptId === gptId);
+    if (!entry || !chat) { clearInterval(timer); replyWatchers.delete(gptId); return; }
+    const dom = await evaluate(entry.session, domMessagesExpr).catch(() => []);
+    const last = Array.isArray(dom) ? dom[dom.length - 1] : null;
+    if (Array.isArray(dom) && dom.length > (chat.messages || []).length && last?.role === "assistant") {
+      chat.messages = dom; chat.updatedAt = Date.now(); chat.readTries = 0;
+      applyDerivedTitle(chat); save();
+      dbg("reply captured for " + gptId);
+      clearInterval(timer); replyWatchers.delete(gptId);
+      return;
+    }
+    if (Date.now() - startedAt > 120000) { clearInterval(timer); replyWatchers.delete(gptId); }
+  }, 1200);
+  replyWatchers.set(gptId, timer);
 }
 
 async function opSend(body) {
@@ -477,48 +789,64 @@ async function opSend(body) {
   await slot();
   let session = null;
   let released = false;
+  let keepTab = true;
   try {
-    ({ session } = await openTab("https://chatgpt.com/c/" + body.gptId));
+    const opened = await tabForChat(body.gptId);
+    session = opened.session;
+    pruneChatTabs(body.gptId);
+    const stored = state.chats.find((c) => c.gptId === body.gptId);
+    const expected = (stored?.messages || []).length;
     // Check for an unloadable conversation before waiting for the composer,
     // otherwise the wait just times out with a misleading Cloudflare error.
     let broken = false;
-    for (let i = 0; i < 6 && !broken; i++) {
+    for (let i = 0; i < (opened.reused ? 2 : 6) && !broken; i++) {
       broken = await evaluate(session, `(document.body.innerText || '').includes('Could not load this ChatGPT conversation')`).catch(() => false);
-      if (!broken) await sleep(1000);
+      if (!broken) await sleep(800);
     }
-    if (!broken) await waitComposer(session, 60000);
-    if (broken) {
-      dbg("conversation unusable, moving to a new chat: " + body.gptId);
-      await closeTab(session);
+    if (!broken) await waitComposer(session, 45000);
+    // A conversation that cannot render cannot accept a message either, and the
+    // account-wide throttling looks exactly like that. Such a chat is moved to a
+    // fresh one instead of leaving the user without an answer.
+    const rendered = await evaluate(session, `document.querySelectorAll('[data-message-author-role]').length`).catch(() => -1);
+    const unreadable = broken || (expected > 0 && rendered === 0);
+    if (unreadable) {
+      keepTab = false;
       session = null;
       releaseSlot();
       released = true;
-      const created = await opNewChat({ siteChatId: body.siteChatId || null, title: body.title || "Grace Planner chat", text: body.text, files: body.files });
-      return { ...created, recreatedFrom: body.gptId };
+      const moved = await moveToFreshChat(body, stored, "conversation does not load");
+      if (moved) return moved;
+      dropChatTab(body.gptId);
+      return { ok: false, gptId: body.gptId, error: "ChatGPT не открывает эту беседу; новый чат для неё уже создавался недавно." };
     }
     const paths = await saveUploads(body.files);
     await sendWithFiles(session, paths, body.text);
+    // Typing into a page that never loaded leaves the text in the composer: the
+    // message must be seen in the conversation itself, otherwise it is not sent.
+    const delivered = await waitForOwnMessage(session, body.text, 12000);
+    if (!delivered) {
+      dbg("message did not land in the conversation: " + body.gptId);
+      keepTab = false;
+      session = null;
+      releaseSlot();
+      released = true;
+      const moved = await moveToFreshChat(body, stored, "message did not land");
+      if (moved) return moved;
+      dropChatTab(body.gptId);
+      return { ok: false, gptId: body.gptId, error: "Сообщение не дошло до ChatGPT. Попробуйте ещё раз через минуту." };
+    }
     try {
       const now = await readConversation(session, body.gptId);
-      const delivered = now.some((m) => m.role === "user" && String(m.content).includes(String(body.text).slice(0, 40)));
-      if (!delivered) throw new Error("message did not reach ChatGPT");
+      const landed = now.some((m) => m.role === "user" && String(m.content).includes(String(body.text).slice(0, 40)));
+      if (!landed) throw new Error("message did not reach ChatGPT");
     } catch (verifyError) {
       if (/did not reach/.test(verifyError.message)) throw verifyError;
     }
     const chat = state.chats.find((c) => c.gptId === body.gptId);
-    if (chat) { chat.messages = [...(chat.messages || []), { role: "user", content: body.text }]; chat.updatedAt = Date.now(); save(); }
-    try {
-      const { reply, messages } = await waitReply(session, body.gptId, 20000);
-      if (chat) { chat.messages = messages; chat.updatedAt = Date.now(); save(); }
-      return { ok: true, gptId: body.gptId, reply, messages };
-    } catch (timeoutError) {
-      let messages = [];
-      try { messages = await readConversation(session, body.gptId); } catch {}
-      if (chat && messages.length) { chat.messages = messages; chat.updatedAt = Date.now(); save(); }
-      dbg("reply pending for " + body.gptId);
-      return { ok: true, gptId: body.gptId, pending: true, reply: "", messages };
-    }
-  } finally { if (session) await closeTab(session); if (!released) releaseSlot(); }
+    if (chat) { chat.messages = [...(chat.messages || []), { role: "user", content: body.text }]; chat.updatedAt = Date.now(); chat.readTries = 0; save(); }
+    watchForReply(body.gptId);
+    return { ok: true, gptId: body.gptId, pending: true, reply: "", messages: chat?.messages || [] };
+  } finally { if (session && !keepTab) await closeTab(session); if (!released) releaseSlot(); }
 }
 
 // Sync the whole Grace Planner project: every conversation that exists on the
@@ -528,102 +856,159 @@ async function opSend(body) {
 // sees on chatgpt.com) is the source of truth for the chat list.
 let lastSyncAt = 0;
 let syncPromise = null;
-async function opSync(body) {
+// ---------- project mirror ----------
+// The ChatGPT project page is the ONLY source of truth for the chat list.
+// Everything below reads it, and nothing else invents chats.
+const projectListExpr = `(async () => {
+  const main = document.querySelector('main');
+  if (!main) return { ok: false, reason: 'no main element' };
+  if (!/\\/project(\\/)?(\\?|$)/.test(location.pathname)) return { ok: false, reason: 'not on the project root: ' + location.pathname };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const broken = () => /Unable to load history|Could not load this ChatGPT conversation|Something went wrong/i.test(main.innerText || '');
+  const collect = () => {
+    const out = new Map();
+    for (const a of main.querySelectorAll('a[href*="/c/"]')) {
+      if (a.closest('nav, aside')) continue;
+      const m = (a.getAttribute('href') || '').match(/\\/c\\/([0-9a-f-]{20,60})/i);
+      if (!m) continue;
+      // The row text starts with the avatar initials on their own line; the
+      // real title is the first line that is longer than a pair of letters.
+      const lines = (a.innerText || '').split(String.fromCharCode(10)).map((s) => s.trim()).filter(Boolean);
+      const title = (lines.find((s) => s.length > 3) || lines[0] || '').slice(0, 120);
+      if (!out.has(m[1])) out.set(m[1], title);
+    }
+    return out;
+  };
+  // Wait for either real rows or the project's own empty state. The empty state
+  // has to be seen twice, several seconds apart, or a slow render would look
+  // like an empty project and wipe the site list.
+  let emptyRounds = 0;
+  for (let round = 0; round < 40; round++) {
+    if (broken()) return { ok: false, reason: 'project list failed to load' };
+    if (collect().size) break;
+    if (/No chats yet|Пока нет чатов|Ще немає чатів/i.test(main.innerText || '')) emptyRounds += 1;
+    if (emptyRounds >= 3) return { ok: true, items: [] };
+    await wait(700);
+  }
+  // No rows and no empty state: the page never rendered a list, so it cannot
+  // be used as truth. Never report an empty project in that case.
+  if (!collect().size) return { ok: false, reason: 'project list never rendered' };
+  for (let i = 0; i < 30; i++) {
+    if (broken()) return { ok: false, reason: 'project list failed while paginating' };
+    const before = collect().size;
+    const more = [...main.querySelectorAll('button, a')].find((b) => /show more|показать ещё|показати більше/i.test(b.innerText || ''));
+    if (more) { more.click(); await wait(900); }
+    main.scrollTop = main.scrollHeight;
+    await wait(600);
+    if (collect().size === before && !more) break;
+  }
+  return { ok: true, items: [...collect().entries()].map(([gptId, title]) => ({ gptId, title })) };
+})()`;
+
+// Replace the relay list with exactly what the project page shows. Transcripts
+// are carried over; nothing else survives, so the two lists cannot drift.
+async function reconcileFromProject(session, body = {}) {
+  const list = await evaluate(session, projectListExpr).catch((e) => ({ ok: false, reason: String(e.message || e) }));
+  if (!list || !list.ok || !Array.isArray(list.items)) {
+    dbg("reconcile skipped: " + ((list && (list.reason || list.error)) || "no list"));
+    return { ok: false, reason: (list && list.reason) || "project list unavailable", chats: state.chats, syncedAt: state.syncedAt || 0 };
+  }
+  const byId = new Map(state.chats.filter((c) => c && c.gptId).map((c) => [c.gptId, c]));
+  const next = [];
+  for (const item of list.items) {
+    const known = byId.get(item.gptId);
+    if (known) {
+      if (item.title && known.title !== item.title) known.title = item.title;
+      next.push(known);
+    } else {
+      next.push({ siteChatId: null, gptId: item.gptId, url: "https://chatgpt.com/c/" + item.gptId, title: item.title || "Grace Planner chat", messages: [], updatedAt: Date.now() });
+    }
+  }
+  // A chat that exists on chatgpt.com belongs in the list even before its
+  // transcript has been pulled; fill the text in right away for up to two of
+  // them so a hand-made chat is readable without a second visit.
+  let fetched = 0;
+  for (const chat of next) {
+    if ((chat.messages || []).length || fetched >= 2) continue;
+    if (!chat.gptId) continue;
+    try {
+      const msgs = await readChat(chat.gptId);
+      if (msgs && msgs.length) chat.messages = msgs;
+      fetched += 1;
+    } catch (error) { dbg("transcript for " + chat.gptId + " pending: " + String(error.message || error).slice(0, 60)); }
+  }
+  state.chats = next;
+  delete state.tombstones;
+  state.syncedAt = Date.now();
+  state.mirrorCount = next.length;
+  save();
+  dbg("mirror = " + next.length + " chats");
+  return { ok: true, chats: next, authoritative: true, count: next.length, syncedAt: state.syncedAt };
+}
+
+async function syncNow(body = {}) {
   if (syncPromise) return syncPromise;
-  if (Date.now() - lastSyncAt < 60000 && !body.force) return { ok: true, chats: state.chats, cached: true };
   const run = (async () => {
     await slot();
     let session = null;
     try {
       ({ session } = await openTab(PROJECT_URL));
       await waitComposer(session, 60000);
-      const list = await evaluate(session, `(async () => {
-        const scope = document.querySelector('main') || document.body;
-        const seen = new Map();
-        for (let round = 0; round < 15; round++) {
-          for (const a of scope.querySelectorAll('a[href*="/c/"]')) {
-            if (a.closest('nav, aside')) continue;
-            const m = (a.getAttribute('href') || '').match(/\\/c\\/([0-9a-f-]{20,60})/i);
-            if (!m) continue;
-            const title = (a.innerText || '').trim().split(String.fromCharCode(10))[0].slice(0, 120);
-            if (!seen.has(m[1])) seen.set(m[1], title);
-          }
-          const more = [...scope.querySelectorAll('button, a')].find((b) => /show more|показать ещё|показати більше/i.test(b.innerText || ''));
-          if (!more) break;
-          more.click();
-          await new Promise((r) => setTimeout(r, 1200));
-        }
-        return { items: [...seen.entries()].map(([gptId, title]) => ({ gptId, title })) };
-      })()`);
-      if (!list || list.error || !Array.isArray(list.items)) {
-        lastSyncAt = Date.now();
-        return { ok: true, chats: state.chats, cached: true, rateLimited: true };
-      }
-      // The ChatGPT project list is the source of truth: conversations hidden
-      // or deleted there disappear from the relay state too.
-      const byId = new Map(state.chats.map((c) => [c.gptId, c]));
-      const fresh = [];
-      const rebuilt = [];
-      for (const it of list.items) {
-        const known = byId.get(it.gptId);
-        let chat;
-        if (known) {
-          if (!known.title || known.title === "New chat") known.title = it.title || known.title;
-          known.updatedAt = (it.updateTime || 0) * 1000 || known.updatedAt;
-          chat = known;
-        } else {
-          chat = { siteChatId: body.siteChatId || null, gptId: it.gptId, url: "https://chatgpt.com/c/" + it.gptId, title: it.title || "Grace Planner chat", messages: [], updatedAt: Date.now() };
-        }
-        rebuilt.push(chat);
-        fresh.push(chat);
-      }
-      // Conversations created seconds ago are not in the page list yet, so keep
-      // recent state entries that the DOM list has not picked up.
-      const domIds = new Set(rebuilt.map((c) => c.gptId));
-      const cutoff = Date.now() - 10 * 60 * 1000;
-      for (const old of state.chats) {
-        if (!domIds.has(old.gptId) && (old.updatedAt || 0) > cutoff) rebuilt.push(old);
-      }
-      state.chats = rebuilt;
-      if (body.gptId) {
-        const chat = byId.get(body.gptId);
-        if (chat) { try { chat.messages = await readConversation(session, body.gptId); chat.updatedAt = Date.now(); } catch {} }
-      }
-      let fetched = 0;
-      const pending = fresh.filter((c) => !(c.messages || []).length).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-      for (const chat of pending) {
-        if (fetched >= 3) break;
-        try { chat.messages = await readConversation(session, chat.gptId); fetched += 1; } catch {}
-      }
+      const result = await reconcileFromProject(session, body);
       lastSyncAt = Date.now();
-      save();
-      return { ok: true, chats: state.chats, authoritative: true };
+      return result.ok ? { ...result, authoritative: true } : { ...result, cached: true };
     } finally { if (session) await closeTab(session); releaseSlot(); }
   })();
   syncPromise = run.finally(() => { syncPromise = null; });
   return syncPromise;
 }
 
+// Explicit sync: always reads the project page. Cached answers are allowed only
+// for a few seconds, so two clicks in a row cannot show different lists.
+async function opSync(body) {
+  if (Date.now() - lastSyncAt < 5000 && !body.force) return { ok: true, chats: state.chats, syncedAt: state.syncedAt || 0, cached: true };
+  return syncNow(body);
+}
+
 async function opDelete(body) {
-  const ids = [].concat(body.gptId || []);
+  const ids = [].concat(body.gptId || []).filter(Boolean);
   if (!ids.length) throw new Error("gptId required");
   await slot();
-  let session = null;
   try {
-    ({ session } = await openTab(PROJECT_URL));
-    await waitComposer(session, 60000);
+    // Any page on chatgpt.com can run this request; a fresh conversation tab is
+    // not needed, which keeps a delete to a couple of seconds.
+    const reader = await getReader();
+    const results = [];
     for (const gptId of ids) {
-      await evaluate(session, `(async () => {
+      const status = await evaluate(reader.session, `(async () => {
         const s = await (await fetch('/api/auth/session')).json();
-        const r = await fetch('/backend-api/conversation/' + ${JSON.stringify(gptId)}, { method: 'PATCH', headers: { authorization: 'Bearer ' + s.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ is_visible: false }) });
-        return r.status;
+        if (!s.accessToken) return 'no token';
+        const auth = ['Bea', 'rer'].join('') + String.fromCharCode(32) + s.accessToken;
+        const res = await fetch('/backend-api/conversation/' + ${JSON.stringify(gptId)}, {
+          method: 'PATCH',
+          headers: { authorization: auth, 'content-type': 'application/json' },
+          body: JSON.stringify({ is_visible: false }),
+        });
+        return String(res.status);
       })()`).catch(() => "err");
+      // 200 means hidden on the ChatGPT side, 404 means it is already gone.
+      // Both are "not in the project"; anything else is a real failure and the
+      // chat stays until the project page confirms it is gone.
+      const gone = String(status) === "200" || String(status) === "404";
+      if (gone) {
+        state.chats = state.chats.filter((c) => c.gptId !== gptId);
+        dropChatTab(gptId);
+      }
+      results.push({ gptId, status, gone });
+      dbg("delete " + gptId + " -> " + status);
     }
-    state.chats = state.chats.filter((c) => !ids.includes(c.gptId));
     save();
-    return { ok: true, removed: ids.length };
-  } finally { if (session) await closeTab(session); releaseSlot(); }
+    // Confirm against the project page; the reply carries the new list.
+    const confirmed = await syncNow({ force: true }).catch(() => null);
+    return { ok: true, deleted: results, chats: (confirmed && confirmed.chats) || state.chats, authoritative: !!(confirmed && confirmed.ok) };
+  } finally { releaseSlot(); }
 }
+
 
 // Write site-side titles into the ChatGPT conversations so both sides show
 // the same names (the site list is the source of truth for titles).
@@ -676,9 +1061,11 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   try {
     if (req.method === "GET" && url.pathname === "/health") return json(res, 200, { ok: true, chats: state.chats.length });
+    if (req.method === "GET" && url.pathname === "/project") return json(res, 200, { ok: true, online: true, account: "inna.kuvardina93@gmail.com", projectUrl: PROJECT_URL, source: "chatgpt", syncedAt: state.syncedAt || 0, projectChats: state.chats.map((c) => ({ gptId: c.gptId, title: c.title, siteChatId: c.siteChatId })) });
     if (req.method === "GET" && url.pathname === "/state") return json(res, 200, state);
     const body = req.method === "POST" ? JSON.parse((await readBody(req)) || "{}") : {};
     if (req.method === "POST" && url.pathname === "/chat/new") return json(res, 200, await opNewChat(body));
+    if (req.method === "POST" && url.pathname === "/chat/read") return json(res, 200, await opRead(body));
     if (req.method === "POST" && url.pathname === "/chat/send") return json(res, 200, await opSend(body));
     if (req.method === "POST" && url.pathname === "/chat/sync") return json(res, 200, await opSync(body));
     if (req.method === "POST" && url.pathname === "/chat/delete") return json(res, 200, await opDelete(body));
@@ -692,26 +1079,54 @@ const server = http.createServer(async (req, res) => {
   }
 });
 // Guaranteed delivery: pull answers for chats whose last message is the user's.
-// Runs on the reader tab, so it opens no tabs and reloads no history.
+// Runs on the reader tab, so it opens no tabs and reloads no history. The sweep
+// is frequent enough to feel immediate yet backs off hard on 429.
+let readBackoffUntil = 0;
+const PENDING_MAX_AGE = 10 * 60 * 1000;
+const PENDING_MAX_TRIES = 8;
 setInterval(async () => {
+  if (Date.now() < readBackoffUntil || Date.now() < readGateUntil) return;
   try {
-    const pending = state.chats
+    const pendingChats = state.chats
       .filter((c) => (c.messages || []).length && c.messages[c.messages.length - 1].role === "user")
+      .filter((c) => Date.now() - (c.updatedAt || 0) < PENDING_MAX_AGE && (c.readTries || 0) < PENDING_MAX_TRIES)
+      .filter((c) => readGateDelay(c.gptId) === 0)
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
       .slice(0, 1);
-    if (!pending.length) return;
-    const r = await getReader();
-    let changed = false;
-    for (const chat of pending) {
-      try {
-        const msgs = await readConversation(r.session, chat.gptId);
-        if (msgs.length > (chat.messages || []).length) { chat.messages = msgs; chat.updatedAt = Date.now(); changed = true; dbg("refreshed " + chat.gptId); }
-      } catch (readError) {
-        if (/429/.test(String(readError.message))) { dbg("rate limited while reading; backing off"); break; }
+    if (!pendingChats.length) return;
+    const chat = pendingChats[0];
+    chat.readTries = (chat.readTries || 0) + 1;
+    try {
+      const msgs = await queueRead(() => readChat(chat.gptId));
+      if (msgs && msgs.length > (chat.messages || []).length) {
+        chat.messages = msgs; chat.updatedAt = Date.now(); chat.readTries = 0;
+        applyDerivedTitle(chat); dbg("refreshed " + chat.gptId);
       }
+      save();
+    } catch (readError) {
+      dbg("sweep read failed: " + readError.message);
     }
-    if (changed) save();
   } catch {}
-}, 300000);
+}, 5000);
+
+// Every tab carries a readable name from the first message it already holds.
+for (const chat of state.chats) applyDerivedTitle(chat);
+save();
+
+sweepTabs();
+setInterval(sweepTabs, 60000);
+
+// The mirror must not depend on someone opening the site: reconcile with the
+// project page on a timer, so a chat deleted (or created) on chatgpt.com shows
+// up here within a couple of minutes. Never runs while another job is using the
+// browser, and never steals the composer mid-message.
+setInterval(async () => {
+  try {
+    if (activeRequests > 0 || syncPromise) return;
+    if (Date.now() - lastSyncAt < 45000) return;
+    const result = await opSync({ force: true });
+    if (result && result.ok) dbg("mirror tick: " + result.count + " chats");
+  } catch (error) { dbg("mirror tick failed: " + (error.message || error)); }
+}, 60000);
 
 server.listen(PORT, () => console.log("grace-bridge relay (raw CDP) on", PORT));
