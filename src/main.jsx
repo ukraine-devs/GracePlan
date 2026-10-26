@@ -288,6 +288,11 @@ function App() {
   function newChat() {
     const chat = createChat();
     setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]);
+    // A chat created on the site must exist in the Grace Planner project on
+    // chatgpt.com right away, so open its server-side twin immediately.
+    bridgeNewChat(chat.id, chat.title, "Новый чат Grace Planner из приложения. Подтверди одним словом: готов.", []).then((result) => {
+      setChats((current) => current.map((item) => item.id === chat.id ? { ...item, gptId: result.gptId, gptUrl: result.url } : item));
+    }).catch((err) => setError("Мост ChatGPT: " + err.message));
   }
   function closeChat(chatId) {
     const rest = chats.filter((chat) => chat.id !== chatId);
