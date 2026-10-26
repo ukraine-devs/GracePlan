@@ -663,6 +663,11 @@ function App() {
         if (gptId) {
           stage("bridge", "Отправка в ChatGPT (сервер)");
           result = await bridgeSend(gptId, text, submittedFiles);
+          if (result.gptId && result.gptId !== gptId) {
+            // The old conversation was unusable; the bridge continued in a new one.
+            gptId = result.gptId;
+            writeChat((chat) => ({ ...chat, gptId: result.gptId, gptUrl: result.url }));
+          }
         } else {
           stage("bridge", "Создаю чат в Grace Planner (ChatGPT)");
           result = await bridgeNewChat(chatId, activeChat.title, text || "Please review the attached files.", submittedFiles);

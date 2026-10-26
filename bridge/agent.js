@@ -308,8 +308,13 @@ async function typeAndSend(session, text) {
     el.focus();
     return document.activeElement === el || el.contains(document.activeElement);
   })()`).catch(() => false);
-  for (let attempt = 0; attempt < 10 && !focused; attempt++) {
-    await sleep(700);
+  for (let attempt = 0; attempt < 3 && !focused; attempt++) {
+    await sleep(2500);
+    if (box) {
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await session.send("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 1 }).catch(() => {});
+      }
+    }
     focused = await evaluate(session, `(() => {
       const el = ${COMPOSER};
       if (!el) return false;
@@ -456,7 +461,7 @@ async function opNewChat(body) {
     state.chats = state.chats.filter((c) => c.gptId !== gptId);
     state.chats.push(chat); save();
     try {
-      const { reply, messages } = await waitReply(session, gptId, 120000, baseline + 1);
+      const { reply, messages } = await waitReply(session, gptId, 20000, baseline + 1);
       chat.messages = messages; chat.updatedAt = Date.now(); save();
       return { ok: true, gptId, url: chat.url, reply, messages };
     } catch (timeoutError) {
@@ -471,9 +476,26 @@ async function opSend(body) {
   if (!body.gptId) throw new Error("gptId required");
   await slot();
   let session = null;
+  let released = false;
   try {
     ({ session } = await openTab("https://chatgpt.com/c/" + body.gptId));
-    await waitComposer(session, 60000);
+    // Check for an unloadable conversation before waiting for the composer,
+    // otherwise the wait just times out with a misleading Cloudflare error.
+    let broken = false;
+    for (let i = 0; i < 6 && !broken; i++) {
+      broken = await evaluate(session, `(document.body.innerText || '').includes('Could not load this ChatGPT conversation')`).catch(() => false);
+      if (!broken) await sleep(1000);
+    }
+    if (!broken) await waitComposer(session, 60000);
+    if (broken) {
+      dbg("conversation unusable, moving to a new chat: " + body.gptId);
+      await closeTab(session);
+      session = null;
+      releaseSlot();
+      released = true;
+      const created = await opNewChat({ siteChatId: body.siteChatId || null, title: body.title || "Grace Planner chat", text: body.text, files: body.files });
+      return { ...created, recreatedFrom: body.gptId };
+    }
     const paths = await saveUploads(body.files);
     await sendWithFiles(session, paths, body.text);
     try {
@@ -486,7 +508,7 @@ async function opSend(body) {
     const chat = state.chats.find((c) => c.gptId === body.gptId);
     if (chat) { chat.messages = [...(chat.messages || []), { role: "user", content: body.text }]; chat.updatedAt = Date.now(); save(); }
     try {
-      const { reply, messages } = await waitReply(session, body.gptId, 120000);
+      const { reply, messages } = await waitReply(session, body.gptId, 20000);
       if (chat) { chat.messages = messages; chat.updatedAt = Date.now(); save(); }
       return { ok: true, gptId: body.gptId, reply, messages };
     } catch (timeoutError) {
@@ -496,7 +518,7 @@ async function opSend(body) {
       dbg("reply pending for " + body.gptId);
       return { ok: true, gptId: body.gptId, pending: true, reply: "", messages };
     }
-  } finally { if (session) await closeTab(session); releaseSlot(); }
+  } finally { if (session) await closeTab(session); if (!released) releaseSlot(); }
 }
 
 // Sync the whole Grace Planner project: every conversation that exists on the
@@ -673,7 +695,10 @@ const server = http.createServer(async (req, res) => {
 // Runs on the reader tab, so it opens no tabs and reloads no history.
 setInterval(async () => {
   try {
-    const pending = state.chats.filter((c) => (c.messages || []).length && c.messages[c.messages.length - 1].role === "user").slice(0, 3);
+    const pending = state.chats
+      .filter((c) => (c.messages || []).length && c.messages[c.messages.length - 1].role === "user")
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, 1);
     if (!pending.length) return;
     const r = await getReader();
     let changed = false;
@@ -681,10 +706,12 @@ setInterval(async () => {
       try {
         const msgs = await readConversation(r.session, chat.gptId);
         if (msgs.length > (chat.messages || []).length) { chat.messages = msgs; chat.updatedAt = Date.now(); changed = true; dbg("refreshed " + chat.gptId); }
-      } catch {}
+      } catch (readError) {
+        if (/429/.test(String(readError.message))) { dbg("rate limited while reading; backing off"); break; }
+      }
     }
     if (changed) save();
   } catch {}
-}, 45000);
+}, 300000);
 
 server.listen(PORT, () => console.log("grace-bridge relay (raw CDP) on", PORT));
