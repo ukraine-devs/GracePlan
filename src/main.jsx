@@ -66,7 +66,8 @@ function createChat() { return { id: crypto.randomUUID(), title: "New chat", mes
 // ---- Grace Bridge: site <-> server-side ChatGPT (Instant) channel ----
 function bridgeFetch(action, payload, timeoutMs = 300000) {
   const isRead = action === "state" || action === "health";
-  return fetch("/api/bridge?action=" + action, {
+  const cacheBust = action === "state" ? "&t=" + Date.now() : "";
+  return fetch("/api/bridge?action=" + action + cacheBust, {
     method: isRead ? "GET" : "POST",
     headers: isRead ? undefined : { "Content-Type": "application/json" },
     body: isRead ? undefined : JSON.stringify(payload),
