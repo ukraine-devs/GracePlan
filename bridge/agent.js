@@ -7,10 +7,11 @@ import { execFileSync, execSync } from "node:child_process";
 
 const CDP_HOST = "localhost:9222";
 const PROJECT_URL = process.env.GRACE_PROJECT_URL || "https://chatgpt.com/g/g-p-6ade243a41e48191b297ec2ac5c7e822-grace-planner/project";
-const GIZMO_ID = process.env.GRACE_PROJECT_ID || (PROJECT_URL.match(/\/g\/(g-p-[^/]+)/) || [])[1] || "g-p-6ade243a41e48191b297ec2ac5c7e822-grace-planner";
-// Every conversation this relay creates lives inside the project, so links shown
-// on the site must keep the project scope: /g/<project>/c/<id>.
-const PROJECT_BASE = "https://chatgpt.com/g/" + GIZMO_ID;
+// Conversation links inside a project use the bare project key (g-p-<id>),
+// while the project page URL carries a human-readable slug after it.
+const PROJECT_KEY = ((PROJECT_URL.match(/\/g\/(g-p-[0-9a-f-]{8,})/i) || [])[1] || "g-p-6ade243a41e48191b297ec2ac5c7e822").replace(/-+$/, "");
+const GIZMO_ID = PROJECT_KEY;
+const PROJECT_BASE = "https://chatgpt.com/g/" + PROJECT_KEY;
 const projectUrl = (gptId) => PROJECT_BASE + "/c/" + gptId;
 const PORT = 8899;
 const STATE_FILE = "/opt/grace-bridge/state.json";
@@ -19,7 +20,19 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 let state = { chats: [] };
 try { state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); } catch {}
-const save = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+// The same conversation can arrive from a send and from a sync at once; the
+// relay list must never hold two entries for one ChatGPT chat.
+function dedupeChats(chats) {
+  const byId = new Map();
+  for (const chat of chats || []) {
+    if (!chat?.gptId) continue;
+    const previous = byId.get(chat.gptId);
+    if (!previous || (chat.updatedAt || 0) >= (previous.updatedAt || 0)) byId.set(chat.gptId, chat);
+  }
+  return [...byId.values()];
+}
+state.chats = dedupeChats(state.chats);
+const save = () => { state.chats = dedupeChats(state.chats); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const withTimeout = (promise, ms, fallback = null) => Promise.race([promise.catch(() => fallback), sleep(ms).then(() => fallback)]);
 const dbg = (msg) => { try { fs.appendFileSync("/tmp/agent.log", new Date().toISOString() + " " + msg + "\n"); } catch {} };
@@ -48,9 +61,17 @@ class CdpSession {
 
 let activeRequests = 0;
 const MAX_PARALLEL = 3;
-const waiters = [];
-async function slot() { if (activeRequests >= MAX_PARALLEL) await new Promise((r) => waiters.push(r)); activeRequests++; }
-function releaseSlot() { activeRequests--; const next = waiters.shift(); if (next) next(); }
+// A wedged ChatGPT tab must not block the whole relay: waiting for a slot is
+// bounded and fails loudly instead of hanging every later request.
+async function slot(timeoutMs = 90000) {
+  const started = Date.now();
+  while (activeRequests >= MAX_PARALLEL) {
+    if (Date.now() - started > timeoutMs) throw new Error("relay is busy: a ChatGPT tab is still working, try again shortly");
+    await sleep(500);
+  }
+  activeRequests++;
+}
+function releaseSlot() { activeRequests = Math.max(0, activeRequests - 1); }
 
 async function openTab(url) {
   const v = await cdpVersion();
@@ -74,6 +95,18 @@ async function closeTab(session) {
     const pages = (await cdpList()).filter((t) => t.type === "page");
     if (pages.length <= 1) return;
     await session.close();
+  } catch {}
+}
+
+// Failed operations can leave ChatGPT tabs behind; a pile of them slows the
+// whole browser down, so surplus tabs are closed before heavy work.
+async function sweepTabs(keep = 2) {
+  try {
+    const list = await cdpList();
+    const pages = list.filter((t) => t.type === "page" && /chatgpt\.com/.test(t.url || ""));
+    for (const tab of pages.slice(keep)) {
+      await fetch(`http://${CDP_HOST}/json/close/${tab.id}`).catch(() => {});
+    }
   } catch {}
 }
 
@@ -410,6 +443,26 @@ async function waitReply(session, gptId, timeoutMs = 240000, minMessages = 0) {
   throw new Error("timeout waiting for ChatGPT reply");
 }
 
+// Backend reads hit rate limits (429) now and then; the rendered page is the
+// fallback source for the very same reply.
+const lastAssistantText = `(() => {
+  const nodes = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+  const last = nodes[nodes.length - 1];
+  return last ? (last.innerText || '').trim() : '';
+})()`;
+async function waitReplyDom(session, timeoutMs = 180000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = "", stable = 0;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    const text = await evaluate(session, lastAssistantText).catch(() => "");
+    const stopping = await evaluate(session, `!!document.querySelector('[data-testid="stop-button"]')`).catch(() => false);
+    if (!stopping && text && text === last) { stable += 1; if (stable >= 2) return text; }
+    else { stable = 0; last = text; }
+  }
+  throw new Error("timeout waiting for ChatGPT reply (page)");
+}
+
 const chatIdExpr = `(() => { const m = location.href.match(/\\/c\\/([0-9a-f-]{20,60})/i); return m ? m[1] : null; })()`;
 
 // ---------- operations ----------
@@ -433,7 +486,12 @@ async function opNewChat(body) {
     if (!gptId) throw new Error("conversation id not resolved");
     let baseline = 0;
     try { baseline = (await readConversation(session, gptId)).length; } catch {}
-    const { reply, messages } = await waitReply(session, gptId, 240000, baseline + 1);
+    let reply = "", messages = [];
+    try { const waited = await waitReply(session, gptId, 120000, baseline + 1); reply = waited.reply; messages = waited.messages; }
+    catch {
+      reply = await waitReplyDom(session, 180000);
+      messages = [{ role: "user", content: body.text || body.title || "" }, { role: "assistant", content: reply }];
+    }
     const chat = { siteChatId: body.siteChatId || null, gptId, url: projectUrl(gptId), title: body.title || "New chat", messages, updatedAt: Date.now() };
     state.chats = state.chats.filter((c) => c.gptId !== gptId);
     state.chats.push(chat); save();
@@ -444,6 +502,7 @@ async function opNewChat(body) {
 // Publishes a site-side chat into the ChatGPT project with its real content,
 // so what the user sees on the site exists in the project as well.
 async function opPublish(body) {
+  await sweepTabs();
   const text = String(body.transcript || "").trim();
   if (!text) throw new Error("transcript required");
   if (text.length > 200000) throw new Error("transcript too long");
@@ -460,7 +519,13 @@ async function opPublish(body) {
     try { baseline = (await readConversation(session, gptId)).length; } catch {}
     let messages = [];
     try { messages = (await waitReply(session, gptId, 180000, baseline + 1)).messages; }
-    catch { try { messages = await readConversation(session, gptId); } catch {} }
+    catch {
+      try { messages = await readConversation(session, gptId); }
+      catch {
+        const reply = await waitReplyDom(session, 180000).catch(() => "");
+        messages = [{ role: "user", content: text }, ...(reply ? [{ role: "assistant", content: reply }] : [])];
+      }
+    }
     const chat = { siteChatId: body.siteChatId || null, gptId, url: projectUrl(gptId), title: String(body.title || "Grace Planner chat").slice(0, 120), messages, updatedAt: Date.now() };
     state.chats = state.chats.filter((c) => c.gptId !== gptId && !(body.siteChatId && c.siteChatId === body.siteChatId));
     state.chats.push(chat); save();
@@ -473,33 +538,40 @@ async function opPublish(body) {
 // which project it writes to, and whether the two chat lists agree.
 let healthCache = { at: 0, value: null };
 async function opHealth() {
+  pruneEmptyChats();
+  await sweepTabs();
   if (healthCache.value && Date.now() - healthCache.at < 60000) return healthCache.value;
   await slot();
   let session = null;
   try {
     ({ session } = await openTab(PROJECT_URL));
     await waitComposer(session, 60000);
-    // The project list renders lazily: wait for rows (or an empty state), then
-    // scroll, otherwise a half-rendered page reports fewer chats than exist.
-    for (let i = 0; i < 20; i++) {
+    // The project list renders lazily: wait for project-scoped rows (or an empty
+    // state), then scroll, otherwise a half-rendered page reports no chats.
+    const projectPrefix = "/g/" + GIZMO_ID + "/c/";
+    for (let i = 0; i < 30; i++) {
       const ready = await evaluate(session, `(() => {
-        const links = document.querySelectorAll('a[href*="/c/"]').length;
+        const mine = [...document.querySelectorAll('a[href*="/c/"]')]
+          .filter((a) => (a.getAttribute('href') || '').includes(${JSON.stringify(projectPrefix)})).length;
         const text = document.querySelector('main')?.innerText || '';
-        return links > 0 || /no chats|нет чатов|поки нема|start a chat|create a chat/i.test(text);
+        return mine > 0 || /no chats|нет чатов|поки нема|start a chat|create a chat/i.test(text);
       })()`).catch(() => false);
       if (ready) break;
       await sleep(1000);
     }
-    await sleep(1200);
+    await sleep(1500);
     const info = await evaluate(session, `(async () => {
       let account = null, plan = null;
       try { const s = await (await fetch('/api/auth/session')).json(); account = s?.user?.email || null; plan = s?.account?.planType || null; } catch (e) {}
       const rows = new Map();
       const scrollers = [...document.querySelectorAll('main, main *')]
         .filter((n) => n.scrollHeight > n.clientHeight + 40 && n.clientHeight > 200).slice(0, 4);
+      const inProject = ${JSON.stringify("/g/" + GIZMO_ID + "/c/")};
       for (let round = 0; round < 6; round++) {
         for (const a of document.querySelectorAll('a[href*="/c/"]')) {
-          const m = (a.getAttribute('href') || '').match(/\\/c\\/([0-9a-f-]{20,60})/i);
+          const href = a.getAttribute('href') || '';
+          if (!href.includes(inProject)) continue;
+          const m = href.match(/\\/c\\/([0-9a-f-]{20,60})/i);
           if (!m || rows.has(m[1])) continue;
           rows.set(m[1], (a.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120));
         }
@@ -538,7 +610,13 @@ async function opSend(body) {
     await waitComposer(session, 60000);
     const paths = await saveUploads(body.files);
     await sendWithFiles(session, paths, body.text);
-    const { reply, messages } = await waitReply(session, body.gptId);
+    let reply = "", messages = [];
+    try { const waited = await waitReply(session, body.gptId); reply = waited.reply; messages = waited.messages; }
+    catch {
+      reply = await waitReplyDom(session, 180000);
+      const known = state.chats.find((c) => c.gptId === body.gptId);
+      messages = [...((known?.messages) || []), { role: "user", content: body.text }, { role: "assistant", content: reply }];
+    }
     const chat = state.chats.find((c) => c.gptId === body.gptId);
     if (chat) { chat.messages = messages; chat.updatedAt = Date.now(); save(); }
     return { ok: true, gptId: body.gptId, reply, messages };
@@ -553,6 +631,7 @@ async function opSend(body) {
 let lastSyncAt = 0;
 let syncPromise = null;
 async function opSync(body) {
+  pruneEmptyChats();
   if (syncPromise) return syncPromise;
   if (Date.now() - lastSyncAt < 60000 && !body.force) return { ok: true, chats: state.chats, cached: true };
   const run = (async () => {
@@ -697,6 +776,15 @@ function opDrop(body) {
 
 function opList() { return { ok: true, chats: state.chats }; }
 
+// Conversations that never received a message (a crashed send) are noise in
+// both lists; they are pruned once they are clearly not in flight.
+function pruneEmptyChats() {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  const before = state.chats.length;
+  state.chats = state.chats.filter((c) => (c.messages || []).length || (c.updatedAt || 0) > cutoff);
+  if (state.chats.length !== before) save();
+}
+
 // ---------- http relay ----------
 const json = (res, code, body) => { res.writeHead(code, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(body)); };
 const readBody = (req) => new Promise((resolve, reject) => {
@@ -731,3 +819,4 @@ const server = http.createServer(async (req, res) => {
   }
 });
 server.listen(PORT, () => console.log("grace-bridge relay (raw CDP) on", PORT));
+sweepTabs(1).catch(() => {});

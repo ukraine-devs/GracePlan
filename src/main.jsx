@@ -132,7 +132,9 @@ function isPlaceholderChat(chat) {
 function loadChats() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    if (Array.isArray(saved) && saved.length) return saved.map((chat) => ({ ...chat, messages: normalizeMessages(chat.messages) }));
+    if (Array.isArray(saved) && saved.length) return saved
+      .map((chat) => ({ ...chat, messages: normalizeMessages(chat.messages) }))
+      .filter((chat) => !isPlaceholderChat(chat) && !(chat.gptId && !(chat.messages || []).some((message) => message.role === "user")));
     const oldMessages = JSON.parse(localStorage.getItem("grace-plan-chat-history") || "null");
     if (Array.isArray(oldMessages) && oldMessages.length) return [{ ...createChat(), title: "Saved chat", messages: normalizeMessages(oldMessages) }];
   } catch { return [createChat()]; }
@@ -227,7 +229,7 @@ function App() {
   // A chat is only "in the project" when its conversation is listed there;
   // chats created by an older relay live outside the project and need republishing.
   const projectChatIds = new Set((bridgeInfo?.projectChats || []).map((chat) => chat.gptId));
-  const needsPublish = (chat) => !!chat && (chat.messages || []).some((message) => message.role === "user") && (!chat.gptId || !projectChatIds.has(chat.gptId));
+  const needsPublish = (chat) => !!bridgeInfo && !!chat && (chat.messages || []).some((message) => message.role === "user") && (!chat.gptId || !projectChatIds.has(chat.gptId));
 
   useEffect(() => { if (!activeChatId && chats[0]) setActiveChatId(chats[0].id); }, [activeChatId, chats]);
   useEffect(() => { let live = true; hydrateArtifacts(chats).then((value) => { if (live) setChats(value); }).catch(() => {}); return () => { live = false; }; }, []);
@@ -296,7 +298,8 @@ function App() {
         result.push({ ...chat });
       }
       result.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
-      return result.filter((chat) => !isPlaceholderChat(chat));
+      return result.filter((chat) => !isPlaceholderChat(chat)
+        && !(chat.gptId && !(chat.messages || []).some((message) => message.role === "user")));
     });
   };
   const twinQueueRef = React.useRef(new Set());
@@ -334,24 +337,11 @@ function App() {
       .catch(() => {});
   }, [chats]);
   useEffect(() => {
-    // Chats whose content is not represented in the project are published there
-    // with their real messages, one at a time and never in a tight loop.
-    if (!bridgeInfo) return;
-    const need = chats.filter((c) => !twinQueueRef.current.has(c.id)
-      && (c.messages || []).some((m) => m.role === "user")
-      && (!c.gptId || !projectChatIds.has(c.gptId))
-      && Date.now() - (c.updatedAt || 0) > 180000).slice(0, 1);
-    for (const chat of need) {
-      twinQueueRef.current.add(chat.id);
-      publishToProject(chat).then((res) => {
-        setChats((current) => current.map((x) => x.id === chat.id ? { ...x, gptId: res.gptId, gptUrl: res.url, updatedAt: Date.now() } : x));
-        bridgeHealth().then((info) => { if (info) setBridgeInfo(info); });
-      }).catch((err) => {
-        setError("Чат не удалось опубликовать в ChatGPT: " + err.message);
-        setTimeout(() => twinQueueRef.current.delete(chat.id), 120000);
-      });
-    }
-  }, [chats, bridgeInfo]);
+    // Automatic republishing stays off: every new message already goes through
+    // the bridge, and a background loop would fill the account with duplicates.
+    // Legacy chats are published from the explicit button in the status strip.
+    return undefined;
+  }, []);
   useEffect(() => {
     let live = true;
     const pullState = async () => {
@@ -560,13 +550,13 @@ function App() {
           stage("bridge", "Создаю чат в Grace Planner (ChatGPT)");
           result = await bridgeNewChat(chatId, activeChat.title, text || "Please review the attached files.", submittedFiles);
           gptId = result.gptId;
-          writeChat((chat) => ({ ...chat, gptId: gptId, gptUrl: result.url }));
+          writeChat((chat) => ({ ...chat, gptId: gptId, gptUrl: result.url, updatedAt: Date.now() }));
         }
         stage("bridge", "Ответ ChatGPT получен", "done");
         const replyId = crypto.randomUUID();
         const gptState = await bridgeState().catch(() => null);
         const twin = gptState?.chats?.find((c) => c.gptId === gptId);
-        writeChat((chat) => ({ ...chat, gptId: gptId, messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] }));
+        writeChat((chat) => ({ ...chat, gptId: gptId, updatedAt: Date.now(), messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] }));
         setChats((current) => current.map((item) => item.id === chatId ? { ...item, gptMessages: twin?.messages || result.messages } : item));
       } catch (bridgeError) {
         setError("Мост ChatGPT: " + bridgeError.message);
