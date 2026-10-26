@@ -210,6 +210,19 @@ button, textarea, input { font: inherit; }
 }
 
 .message.user span { color: #666; }
+
+/* Photos of a proposal sit in the message as a compact strip: five full-width
+   pictures made the chat unreadable. */
+.message.user .message-markdown img {
+  max-width: 168px;
+  max-height: 168px;
+  object-fit: cover;
+  border-radius: 10px;
+  margin: 6px 6px 0 0;
+  vertical-align: top;
+  border: 1px solid rgba(0,0,0,.08);
+  cursor: zoom-in;
+}
 .artifact-link {
   display: inline-flex;
   align-items: center;

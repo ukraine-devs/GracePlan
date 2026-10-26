@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 
-export const ACCEPT_FILES = "image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp,.zip,application/zip,application/x-zip-compressed";
+export const ACCEPT_FILES = ""; // empty accept means: any file
 
 const MB = 1024 * 1024;
 const MAX_FILES = 100;
@@ -73,7 +73,13 @@ export async function expandUploads(selected, { existingCount = 0, existingBytes
       if (!isZip) {
         const type = imageType(file);
         if (!type) {
-          errors.push(`${name}: unsupported file type. Only JPEG, PNG, WebP images and ZIP archives containing them are supported.`);
+          // Any other format is still welcome: it travels to ChatGPT untouched
+          // and the site shows it as a file card next to the photos.
+          if (!Number.isSafeInteger(file.size) || file.size > MAX_IMAGE_BYTES) {
+            errors.push(`${name}: file is larger than 20 MB.`);
+            continue;
+          }
+          append(file);
           continue;
         }
         const error = imageError(file.size, name);

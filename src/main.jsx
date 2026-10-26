@@ -18,6 +18,19 @@ function MessageText({ text }) {
 }
 
 const ARTIFACT_DB = "grace-plan-artifacts";
+
+// A chat deleted from the site is hidden from the server list immediately, even
+// though the relay needs a few seconds to hide it inside ChatGPT. Without this
+// the two-second poll put the chat back and deleting looked broken.
+const deletedChats = new Map();
+function markDeleted(gptId) {
+  if (!gptId) return;
+  deletedChats.set(gptId, Date.now());
+  window.setTimeout(() => deletedChats.delete(gptId), 30000);
+}
+function withoutDeleted(list) {
+  return (list || []).filter((chat) => !(chat?.gptId && deletedChats.has(chat.gptId)));
+}
 function openArtifactDb() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(ARTIFACT_DB, 1);
@@ -60,6 +73,14 @@ async function hydrateArtifacts(chats) {
   db.close();
   return hydrated;
 }
+
+// Every new chat starts from the same brief: the project proposal with 3D renders
+// built from the photos, delivered as a multi-format PDF. It is pre-filled in the
+// composer so photos can be attached and sent with it.
+const DEFAULT_GOAL = `/goal @Grace Plan зроби проектну пропозицію з 3D рендерами по моїм фото, максимальна якість, я очыкую PDF документ з листами рызного формату (A2 з 3D рендером у розрізі по єталону, A3, A4 з додатками та розрахунками таблицямиб цінами, з різними варіантами окремим аркушем А4 наприклад).
+
+/goal для того чтобі агент не останавливался, нужно задать "Цель" всё сообщение.
+@Grace Plan для того чтобі агент соблюдал приблизительно один и тот же формат и вид и дизайн финального документа PDF на английском или украинском язіке. Сборка документа по єталонному PDF.`;
 
 function createChat() { return { id: crypto.randomUUID(), title: "New chat", messages: [welcome], createdAt: Date.now() }; }
 
@@ -105,15 +126,32 @@ function readFileAsDataUrl(file) {
     reader.readAsDataURL(file);
   });
 }
+// Vercel rejects a request above 4.5 MB, so one message carrying ten photos is
+// impossible. Files are uploaded one by one and the message only names them.
+const MAX_UPLOAD_CHARS = 3_000_000;
+async function uploadFile(file) {
+  const name = file.relativePath || file.name;
+  const type = file.type || "application/octet-stream";
+  let data = await readFileAsDataUrl(file);
+  if (data.length > MAX_UPLOAD_CHARS) {
+    if (!/^image\//.test(type)) throw new Error("Файл больше 2 МБ, его нельзя отправить одним куском: " + name);
+    data = (await prepareImage(file)).data;
+  }
+  const stored = await bridgeFetch("upload", { name, mime: type, data }, 180000);
+  return stored?.name || name;
+}
+async function uploadAll(files) {
+  const names = [];
+  for (const file of files || []) names.push(await uploadFile(file));
+  return names;
+}
 async function bridgeNewChat(siteChatId, title, text, files) {
-  const prepared = [];
-  for (const file of files || []) prepared.push({ name: file.relativePath || file.name, mime: file.type, data: await readFileAsDataUrl(file) });
-  return bridgeFetch("new", { siteChatId, title, text, files: prepared });
+  const fileNames = await uploadAll(files);
+  return bridgeFetch("new", { siteChatId, title, text, fileNames });
 }
 async function bridgeSend(gptId, text, files) {
-  const prepared = [];
-  for (const file of files) prepared.push({ name: file.relativePath || file.name, mime: file.type, data: await readFileAsDataUrl(file) });
-  return bridgeFetch("send", { gptId, text, files: prepared });
+  const fileNames = await uploadAll(files);
+  return bridgeFetch("send", { gptId, text, fileNames });
 }
 async function bridgeState() {
   try { return await bridgeFetch("state", null, 15000); } catch { return null; }
@@ -235,7 +273,7 @@ function App() {
   const [bridgeInfo, setBridgeInfo] = useState(null);
   const [publishing, setPublishing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [accept, setAccept] = useState("image/jpeg,image/png,image/webp,.zip,application/zip");
+  const [accept, setAccept] = useState("");
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
   const dragDepth = useRef(0);
@@ -319,7 +357,8 @@ function App() {
   useEffect(() => { isSendingRef.current = isSending; }, [isSending]);
   const activeIdRef = React.useRef(activeChat?.id || null);
   useEffect(() => { activeIdRef.current = activeChat?.id || null; }, [activeChat?.id]);
-  const mergeServerChats = (serverChats, authoritative) => {
+  const mergeServerChats = (rawServerChats, authoritative) => {
+    const serverChats = withoutDeleted(rawServerChats);
     setChats((current) => {
       const busyId = isSendingRef.current ? activeIdRef.current : null;
       const byGpt = new Map();
@@ -507,13 +546,10 @@ function App() {
   function updateActiveChat(updater) { setChats((current) => current.map((chat) => (chat.id === activeChat.id ? updater(chat) : chat))); }
   function newChat() {
     const chat = createChat();
-    setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]);
-    // A chat created on the site must exist in the Grace Planner project on
-    // chatgpt.com right away, so open its server-side twin immediately.
-    twinQueueRef.current.add(chat.id);
-    bridgeNewChat(chat.id, chat.title, "Новый чат Grace Planner из приложения. Подтверди одним словом: готов.", []).then((result) => {
-      setChats((current) => current.map((item) => item.id === chat.id ? { ...item, gptId: result.gptId, gptUrl: result.url } : item));
-    }).catch((err) => setError("Мост ChatGPT: " + err.message));
+    setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(DEFAULT_GOAL); setError(""); setFiles([]);
+    // The twin is created by the first real message, carrying the text the user
+    // typed. An eager stub conversation only polluted the project and was then
+    // filtered out of the tab strip as a placeholder.
   }
   // Drag the tab strip with the mouse (touch devices scroll it natively).
   const tabsRef = React.useRef(null);
@@ -552,7 +588,10 @@ function App() {
   function deleteChat(chatId) {
     // The list is shared, so a deletion has to happen on the server too.
     const target = chats.find((chat) => chat.id === chatId);
-    if (target?.gptId) bridgeFetch("delete", { gptId: target.gptId }, 120000).catch(() => {});
+    if (target?.gptId) {
+      markDeleted(target.gptId);
+      bridgeFetch("delete", { gptId: target.gptId }, 120000).catch(() => {});
+    }
     setChats((current) => {
       const remaining = current.filter((chat) => chat.id !== chatId);
       if (remaining.length) {
@@ -724,6 +763,11 @@ function App() {
       for (let index = 0; index < submittedFiles.length; index++) {
         const file = submittedFiles[index];
         setCurrentStep(0); stage("read-" + index, "Reading " + file.name);
+        if (!/^image\//.test(file.type || "") && !/\.(png|jpe?g|webp)$/i.test(file.name || "")) {
+          userArtifacts.push({ type: "file", name: file.relativePath || file.name });
+          stage("read-" + index, "Attached " + file.name, "done");
+          continue;
+        }
         const prepared = await prepareImage(file);
         preparedImages.push(prepared);
         stage("read-" + index, "Read " + file.name, "done");
