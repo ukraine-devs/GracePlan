@@ -17,6 +17,8 @@ let state = { chats: [] };
 try { state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); } catch {}
 const save = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const COMPOSER = "([...document.querySelectorAll('#prompt-textarea, div[contenteditable=\\\"true\\\"]')].filter((n) => n.offsetParent !== null && n.getBoundingClientRect().width > 100).pop())";
+
 const withTimeout = (promise, ms, fallback = null) => Promise.race([promise.catch(() => fallback), sleep(ms).then(() => fallback)]);
 const dbg = (msg) => { try { fs.appendFileSync("/tmp/agent.log", new Date().toISOString() + " " + msg + "\n"); } catch {} };
 
@@ -106,7 +108,7 @@ async function navigate(session, url) {
 async function waitComposer(session, timeoutMs = 900000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const ok = await evaluate(session, `!!(document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]')) && !/just a moment/i.test(document.title)`);
+    const ok = await evaluate(session, `!!(${COMPOSER}) && !/just a moment/i.test(document.title)`);
     if (ok) return true;
     await sleep(3000);
   }
@@ -148,7 +150,7 @@ function xd(args) {
 
 async function openAttachDialog(session) {
   const clicked = await evaluate(session, `(() => {
-    const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
+    const el = ${COMPOSER};
     if (el) el.focus();
     const form = document.querySelector('form') || document;
     const b = form.querySelector('button[aria-label="Add files and more"]');
@@ -220,7 +222,7 @@ async function uploadFiles(session, paths) {
     if (!xclipImage(p)) return false;
     await withTimeout(session.send("Page.bringToFront"), 3000).catch(() => {});
     await evaluate(session, `(() => {
-      const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
+      const el = ${COMPOSER};
       if (!el) return false;
       el.scrollIntoView({ block: 'center' });
       el.focus();
@@ -259,8 +261,8 @@ async function waitIdle(session, timeoutMs = 180000) {
     await sleep(2000);
     const idle = await evaluate(session, `(() => ({
       stop: !!document.querySelector('[data-testid="stop-button"]'),
-      composer: !!(document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]')),
-      len: ((document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]'))?.innerText || "").trim().length,
+      composer: !!(${COMPOSER}),
+      len: ((${COMPOSER})?.innerText || "").trim().length,
     }))()`).catch(() => null);
     if (idle && !idle.stop && idle.composer && !idle.len) return true;
   }
@@ -285,39 +287,37 @@ async function sendWithFiles(session, paths, text) {
 
 async function typeAndSend(session, text) {
   const msg = text || "Please review the attached files.";
-  // Focus the composer in-page: coordinate clicks miss when the tab viewport is
-  // small and the composer sits outside the visible area.
-  const focused = await evaluate(session, `(() => {
-    const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
-    if (!el) return false;
+  await withTimeout(session.send("Page.bringToFront"), 3000).catch(() => {});
+  const readLen = () => evaluate(session, `((${COMPOSER})?.innerText || "").length`).catch(() => 0);
+  const box = await evaluate(session, `(() => {
+    const el = ${COMPOSER};
+    if (!el) return null;
     el.scrollIntoView({ block: 'center' });
-    el.focus();
-    const sel = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    range.collapse(false);
-    sel.removeAllRanges(); sel.addRange(range);
-    return document.activeElement === el || el.contains(document.activeElement);
-  })()`);
-  if (!focused) {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await sleep(600);
-      focused = await evaluate(session, `(() => {
-        const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
-        if (!el) return false;
-        el.focus();
-        return document.activeElement === el || el.contains(document.activeElement);
-      })()`).catch(() => false);
-      if (focused) break;
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + Math.min(30, r.height / 2)) };
+  })()`).catch(() => null);
+  if (box) {
+    for (const type of ["mousePressed", "mouseReleased"]) {
+      await session.send("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 1 }).catch(() => {});
     }
+    await sleep(400);
+  }
+  let focused = await evaluate(session, `(() => {
+    const el = ${COMPOSER};
+    if (!el) return false;
+    el.focus();
+    return document.activeElement === el || el.contains(document.activeElement);
+  })()`).catch(() => false);
+  for (let attempt = 0; attempt < 10 && !focused; attempt++) {
+    await sleep(700);
+    focused = await evaluate(session, `(() => {
+      const el = ${COMPOSER};
+      if (!el) return false;
+      el.focus();
+      return document.activeElement === el || el.contains(document.activeElement);
+    })()`).catch(() => false);
   }
   if (!focused) throw new Error("composer not focused");
-  dbg("composer focused");
-  await sleep(300);
-  await evaluate(session, `(() => { const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]'); if (!el) return false; el.focus(); document.execCommand('selectAll'); document.execCommand('delete'); return true; })()`).catch(() => false);
-  // CDP text insertion first: it does not depend on the tab being focused.
-  await withTimeout(session.send("Page.bringToFront"), 3000).catch(() => {});
-  const readLen = () => evaluate(session, `((document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]'))?.innerText || "").length`).catch(() => 0);
   const preLen = await readLen();
   if (preLen > 0) {
     for (const [type, code] of [["rawKeyDown", 65], ["keyUp", 65]]) {
@@ -328,45 +328,58 @@ async function typeAndSend(session, text) {
     }
     await sleep(250);
   }
-  await withTimeout(session.send("Input.insertText", { text: msg }), 8000).catch(() => {});
-  let ins = "cdp";
+  for (const ch of msg) {
+    await session.send("Input.dispatchKeyEvent", { type: "keyDown", text: ch, unmodifiedText: ch, key: ch }).catch(() => {});
+    await session.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch }).catch(() => {});
+    await sleep(15);
+  }
+  dbg("sendBtn=" + await evaluate(session, `(() => { const b = [...document.querySelectorAll('button')].find((x) => /send/i.test((x.getAttribute('aria-label')||'') + (x.getAttribute('data-testid')||'')) && x.offsetParent !== null); return b ? (b.disabled ? 'disabled' : 'enabled') : 'none'; })()`).catch(() => "err"));
+  if ((await readLen()) === 0) await withTimeout(session.send("Input.insertText", { text: msg }), 8000).catch(() => {});
   if ((await readLen()) === 0) {
     await evaluate(session, `(() => {
-      const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
+      const el = ${COMPOSER};
       if (!el) return false;
       el.focus();
       document.execCommand('insertText', false, ${JSON.stringify(msg)});
       return true;
     })()`).catch(() => false);
-    ins = "execCommand";
   }
-  dbg("insert=" + ins + " len=" + await evaluate(session, `((document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]'))?.innerText || "").length`));
-  await sleep(500);
-  // Send: only the composer's "Send" button actually submits in the current UI.
-  const composerLen = () => evaluate(session, `((document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]'))?.innerText || "").trim().length`);
-  const clickSend = () => evaluate(session, `(() => {
-    const b = document.querySelector('button[aria-label="Send"]')
-      || document.querySelector('[data-testid="send-button"]')
-      || [...document.querySelectorAll('button')].find(x => /^send/i.test(x.getAttribute('aria-label') || ''));
-    if (!b || b.disabled) return false;
-    b.click();
-    return true;
-  })()`).catch(() => false);
-  dbg("composer len before send " + (await composerLen()));
-  for (let attempt = 0; attempt < 3; attempt++) {
-    await clickSend();
+  dbg("insert len=" + await readLen());
+  await sleep(300);
+  let sent = false;
+  for (let attempt = 0; attempt < 3 && !sent; attempt++) {
+    await evaluate(session, `(() => {
+      const el = ${COMPOSER};
+      const form = el && el.closest('form');
+      const scope = form || document;
+      const cands = [...scope.querySelectorAll('button')].filter((b) => {
+        const label = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-testid') || '');
+        return /send/i.test(label) && b.offsetParent !== null;
+      });
+      const b = cands[0];
+      if (!b || b.disabled) return false;
+      b.click();
+      return true;
+    })()`).catch(() => false);
     await sleep(1500);
-    if (!(await composerLen())) break;
+    if (!(await readLen())) { sent = true; break; }
     for (const [type, code] of [["rawKeyDown", 13], ["keyUp", 13]]) {
       await session.send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: code, nativeVirtualKeyCode: code, unmodifiedText: type === "rawKeyDown" ? "\r" : undefined });
     }
     await sleep(1500);
-    if (!(await composerLen())) break;
+    if (!(await readLen())) sent = true;
   }
-  dbg("composer len after send " + (await composerLen()));
-  if (await composerLen()) throw new Error("message was not sent (composer still has text)");
-  await sleep(500);
+  if (!sent) dbg("composer still has text; verifying through the conversation instead");
+  await sleep(600);
 }
+
+
+
+// The composer replaces a pasted image with the next one, so multiple files go
+// out as separate messages; the real task text rides on the last one.
+
+
+
 
 // Read the conversation through ChatGPT's own backend API.
 const readConversation = async (session, gptId) => {
@@ -463,6 +476,13 @@ async function opSend(body) {
     await waitComposer(session, 60000);
     const paths = await saveUploads(body.files);
     await sendWithFiles(session, paths, body.text);
+    try {
+      const now = await readConversation(session, body.gptId);
+      const delivered = now.some((m) => m.role === "user" && String(m.content).includes(String(body.text).slice(0, 40)));
+      if (!delivered) throw new Error("message did not reach ChatGPT");
+    } catch (verifyError) {
+      if (/did not reach/.test(verifyError.message)) throw verifyError;
+    }
     const chat = state.chats.find((c) => c.gptId === body.gptId);
     if (chat) { chat.messages = [...(chat.messages || []), { role: "user", content: body.text }]; chat.updatedAt = Date.now(); save(); }
     try {
