@@ -251,7 +251,8 @@ function App() {
         if (!chat) continue;
         // A fresh full sync that no longer lists a paired chat means it was
         // deleted on the ChatGPT side; mirror that instead of keeping a ghost.
-        if (authoritative && chat.gptId) continue;
+        const stale = authoritative && (Date.now() - (chat.createdAt || 0)) > 180000;
+        if (authoritative && (chat.gptId || stale)) continue;
         result.push({ ...chat });
       }
       result.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
@@ -283,7 +284,7 @@ function App() {
     pullState();
     pullSync();
     const timerState = window.setInterval(pullState, 25000);
-    const timerSync = window.setInterval(pullSync, 90000);
+    const timerSync = window.setInterval(pullSync, 300000);
     return () => { live = false; window.clearInterval(timerState); window.clearInterval(timerSync); };
   }, []);
   useEffect(() => { const timer = window.setTimeout(() => setShowStatus(false), 5500); return () => window.clearTimeout(timer); }, []);
