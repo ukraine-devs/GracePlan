@@ -132,9 +132,14 @@ function isPlaceholderChat(chat) {
 function loadChats() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    if (Array.isArray(saved) && saved.length) return saved
-      .map((chat) => ({ ...chat, messages: normalizeMessages(chat.messages) }))
-      .filter((chat) => !isPlaceholderChat(chat) && !(chat.gptId && !(chat.messages || []).some((message) => message.role === "user")));
+    if (Array.isArray(saved) && saved.length) {
+      const clean = saved
+        .map((chat) => ({ ...chat, messages: normalizeMessages(chat.messages) }))
+        .filter((chat) => !isPlaceholderChat(chat))
+        .filter((chat) => !/^[a-z0-9.-]+\.(vercel\.app|com|app)$/i.test(String(chat.title || "").trim()))
+        .filter((chat) => !(chat.gptId && !(chat.messages || []).some((message) => message.role === "user")));
+      return clean.length ? clean : [createChat()];
+    }
     const oldMessages = JSON.parse(localStorage.getItem("grace-plan-chat-history") || "null");
     if (Array.isArray(oldMessages) && oldMessages.length) return [{ ...createChat(), title: "Saved chat", messages: normalizeMessages(oldMessages) }];
   } catch { return [createChat()]; }
@@ -324,6 +329,11 @@ function App() {
     if (!(chat.messages || []).some((message) => message.role === "user")) return;
     if (chat.publishedAt) return;
     if (chat.gptId && projectChatIds.has(chat.gptId)) return;
+    // Only a settled chat is published: while a send is in flight the last turn
+    // is the user's, and publishing then would create a second conversation.
+    const messages = chat.messages || [];
+    if ((messages[messages.length - 1] || {}).role !== "assistant") return;
+    if (Date.now() - (chat.updatedAt || chat.createdAt || 0) < 60000) return;
     if (twinQueueRef.current.has(chat.id)) return;
     twinQueueRef.current.add(chat.id);
     setPublishing(true);

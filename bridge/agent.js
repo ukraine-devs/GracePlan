@@ -525,6 +525,7 @@ async function opNewChat(body) {
     const chat = { siteChatId: body.siteChatId || null, gptId, url: projectUrl(gptId), title: body.title || "New chat", messages, updatedAt: Date.now() };
     state.chats = state.chats.filter((c) => c.gptId !== gptId);
     state.chats.push(chat); save();
+    await renameOnSession(session, gptId, cleanTitle(chat.title)).catch(() => {});
     return { ok: true, gptId, url: chat.url, reply: "", messages, pending: true };
   } finally { if (session) await closeTab(session); releaseSlot(); }
 }
@@ -551,6 +552,7 @@ async function opPublish(body) {
     const chat = { siteChatId: body.siteChatId || null, gptId, url: projectUrl(gptId), title: String(body.title || "Grace Planner chat").slice(0, 120), messages, updatedAt: Date.now() };
     state.chats = state.chats.filter((c) => c.gptId !== gptId && !(body.siteChatId && c.siteChatId === body.siteChatId));
     state.chats.push(chat); save();
+    await renameOnSession(session, gptId, cleanTitle(chat.title)).catch(() => {});
     healthCache = { at: 0, value: null };
     return { ok: true, gptId, url: chat.url, messages };
   } finally { if (session) await closeTab(session); releaseSlot(); }
@@ -667,6 +669,29 @@ async function opSend(body) {
 // sees on chatgpt.com) is the source of truth for the chat list.
 let lastSyncAt = 0;
 let syncPromise = null;
+function cleanTitle(title) {
+  const value = String(title || "").replace(/\s+/g, " ").trim();
+  // The project list renders avatars and the browser tab, not only names:
+  // "ИК" is initials, "graceplanner.vercel.app" is the host — neither is a title.
+  if (!value || value.length < 4) return "";
+  if (/^[a-z0-9.-]+\.(vercel\.app|com|app)$/i.test(value)) return "";
+  if (/^(new chat|новый чат)$/i.test(value)) return "";
+  return value;
+}
+
+// Sets the ChatGPT conversation title so both sides show the same name.
+async function renameOnSession(session, gptId, title) {
+  if (!gptId || !title) return false;
+  const status = await evaluate(session, `(async () => {
+    const s = await (await fetch('/api/auth/session')).json();
+    const r = await fetch('/backend-api/conversation/' + ${JSON.stringify(gptId)}, { method: 'PATCH', headers: { authorization: 'Bearer ' + s.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ title: ${JSON.stringify(title)} }) });
+    return r.status;
+  })()`).catch(() => "err");
+  const chat = state.chats.find((c) => c.gptId === gptId);
+  if (chat && String(status) === "200") { chat.title = title; save(); }
+  return String(status) === "200";
+}
+
 async function opSync(body) {
   pruneEmptyChats();
   if (syncPromise) return syncPromise;
@@ -708,11 +733,12 @@ async function opSync(body) {
         const known = byId.get(it.gptId);
         let chat;
         if (known) {
-          if (!known.title || known.title === "New chat") known.title = it.title || known.title;
+          const domTitle = cleanTitle(it.title);
+          if (domTitle && (!known.title || known.title === "New chat")) known.title = domTitle;
           known.updatedAt = (it.updateTime || 0) * 1000 || known.updatedAt;
           chat = known;
         } else {
-          chat = { siteChatId: body.siteChatId || null, gptId: it.gptId, url: projectUrl(it.gptId), title: it.title || "Grace Planner chat", messages: [], updatedAt: Date.now() };
+          chat = { siteChatId: body.siteChatId || null, gptId: it.gptId, url: projectUrl(it.gptId), title: cleanTitle(it.title) || "Grace Planner chat", messages: [], updatedAt: Date.now() };
         }
         rebuilt.push(chat);
         fresh.push(chat);
