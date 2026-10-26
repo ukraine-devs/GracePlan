@@ -428,6 +428,30 @@ function App() {
       setChats((current) => current.map((item) => item.id === chat.id ? { ...item, gptId: result.gptId, gptUrl: result.url } : item));
     }).catch((err) => setError("Мост ChatGPT: " + err.message));
   }
+  // Drag the tab strip with the mouse (touch devices scroll it natively).
+  const tabsRef = React.useRef(null);
+  const tabDragRef = React.useRef({ active: false, startX: 0, startScroll: 0 });
+  function tabDragStart(event) {
+    const el = tabsRef.current;
+    if (!el || event.pointerType === "touch") return;
+    tabDragRef.current = { active: true, startX: event.clientX, startScroll: el.scrollLeft };
+    el.setPointerCapture?.(event.pointerId);
+    el.classList.add("dragging");
+  }
+  function tabDragMove(event) {
+    const el = tabsRef.current;
+    const drag = tabDragRef.current;
+    if (!el || !drag.active) return;
+    el.scrollLeft = drag.startScroll - (event.clientX - drag.startX);
+  }
+  function tabDragEnd(event) {
+    const el = tabsRef.current;
+    if (el) {
+      el.classList.remove("dragging");
+      try { el.releasePointerCapture?.(event.pointerId); } catch {}
+    }
+    tabDragRef.current.active = false;
+  }
   function closeChat(chatId) {
     const rest = chats.filter((chat) => chat.id !== chatId);
     const list = rest.length ? rest : [createChat()];
@@ -758,7 +782,7 @@ function App() {
     <main className="app-shell"><section className="chat-panel" aria-label="Grace Planner chat">
       <header className="topbar"><div className="brand-row"><div className="brand-text" aria-label="Grace AI Planner">Grace AI Planner</div></div>
         <button className="icon-button chat-manager-button" type="button" onClick={() => setChatManagerOpen(true)} aria-label="All chats" title="All chats"><Menu size={18} /></button>
-        <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => (
+        <nav className="chat-tabs" aria-label="Chats" ref={tabsRef} onPointerDown={tabDragStart} onPointerMove={tabDragMove} onPointerUp={tabDragEnd} onPointerCancel={tabDragEnd} onPointerLeave={tabDragEnd}>{chats.map((chat) => (
           <div className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} role="tab" aria-selected={chat.id === activeChat.id} tabIndex={0} onClick={() => setActiveChatId(chat.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setActiveChatId(chat.id); } }}>
             <span className="chat-tab-title">{chat.title}</span>
             <button className="chat-tab-close" type="button" aria-label={"Закрыть вкладку: " + chat.title} onClick={(e) => { e.stopPropagation(); closeChat(chat.id); }}>×</button>
