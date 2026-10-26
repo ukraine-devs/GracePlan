@@ -365,6 +365,30 @@ function App() {
       return clean.filter((chat) => chat.gptId || isFresh(chat) || (chat.messages || []).some((message) => message.role === "user"));
     });
   };
+  // Hard guarantee for the chat in front of the user: as soon as the server
+  // transcript grows (an answer arrived), show it.
+  useEffect(() => {
+    const gptId = activeChat?.gptId;
+    const chatId = activeChat?.id;
+    if (!gptId || !chatId) return undefined;
+    let live = true;
+    const pull = async () => {
+      const state = await bridgeState().catch(() => null);
+      if (!live) return;
+      const twin = state?.chats?.find((c) => c.gptId === gptId);
+      const remote = (twin?.messages || []).map((m) => ({ id: crypto.randomUUID(), role: m.role === "user" ? "user" : "assistant", content: m.content }));
+      if (remote.length < 2) return;
+      setChats((current) => current.map((chat) => {
+        if (chat.id !== chatId) return chat;
+        const localContent = (chat.messages || []).filter((m) => m !== welcome);
+        if (remote.length <= localContent.length) return chat;
+        return { ...chat, messages: [welcome, ...remote] };
+      }));
+    };
+    const timer = window.setInterval(pull, 7000);
+    pull();
+    return () => { live = false; window.clearInterval(timer); };
+  }, [activeChat?.id, activeChat?.gptId, activeChat?.messages?.length]);
   const twinQueueRef = React.useRef(new Set());
   const publishChat = React.useCallback(async (chat) => {
     setPublishing(true);
