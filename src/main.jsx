@@ -272,9 +272,11 @@ function App() {
         const localHasAssistant = localContent.some((m) => m.role === "assistant" && !/Не удалось/i.test(m.content || ""));
         const busy = busyId === chat.id;
         let messages = chat.messages;
-        // Placeholder twins from older builds must never overwrite real content.
+        // Placeholder twins and published transcripts must never overwrite the
+        // real conversation as it was typed on the site.
         const remoteIsPlaceholder = remote.length > 0 && /^Новый чат Grace Planner из приложения/.test(remote[0].content || "");
-        if (remote.length && !busy && !remoteIsPlaceholder && (remote.length > localContent.length || !localHasAssistant)) messages = [welcome, ...remote];
+        const remoteIsTranscript = remote.length > 0 && /^Grace Planner — чат «/.test(remote[0].content || "");
+        if (remote.length && !busy && !remoteIsPlaceholder && !remoteIsTranscript && (remote.length > localContent.length || !localHasAssistant)) messages = [welcome, ...remote];
         const title = (!chat.title || chat.title === "New chat") ? (twin.title || chat.title) : chat.title;
         result.push({ ...chat, gptId: twin.gptId, gptUrl: chat.gptUrl || twin.url, title, messages, gptMessages: remote.length ? remote : chat.gptMessages, updatedAt: Math.max(chat.updatedAt || 0, twin.updatedAt || 0) });
       }
@@ -307,12 +309,33 @@ function App() {
     setPublishing(true);
     try {
       const res = await publishToProject(chat);
-      setChats((current) => current.map((x) => x.id === chat.id ? { ...x, gptId: res.gptId, gptUrl: res.url } : x));
+      setChats((current) => current.map((x) => x.id === chat.id ? { ...x, gptId: res.gptId, gptUrl: res.url, publishedAt: Date.now() } : x));
       setError("");
       bridgeHealth().then((info) => { if (info) setBridgeInfo(info); });
       return res;
     } finally { setPublishing(false); }
   }, []);
+  // One automatic publication per chat: the open chat with real content is
+  // copied into the project without pressing anything, and never republished in
+  // a loop (the local flag survives reloads and the session set survives renders).
+  useEffect(() => {
+    const chat = activeChat;
+    if (!chat || !bridgeInfo || isSending) return;
+    if (!(chat.messages || []).some((message) => message.role === "user")) return;
+    if (chat.publishedAt) return;
+    if (chat.gptId && projectChatIds.has(chat.gptId)) return;
+    if (twinQueueRef.current.has(chat.id)) return;
+    twinQueueRef.current.add(chat.id);
+    setPublishing(true);
+    publishToProject(chat)
+      .then((res) => {
+        setChats((current) => current.map((x) => x.id === chat.id ? { ...x, gptId: res.gptId, gptUrl: res.url, publishedAt: Date.now() } : x));
+        setError("");
+        bridgeHealth().then((info) => { if (info) setBridgeInfo(info); });
+      })
+      .catch((err) => setError("Не удалось перенести чат в ChatGPT: " + err.message))
+      .finally(() => setPublishing(false));
+  }, [activeChat?.id, bridgeInfo?.checkedAt, isSending]);
   useEffect(() => {
     let live = true;
     let timer = null;
