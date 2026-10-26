@@ -53,7 +53,6 @@ async function openTab(url) {
   const browser = await CdpSession.open(v.webSocketDebuggerUrl);
   const { targetId } = await browser.send("Target.createTarget", { url, background: true });
   const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
-  await browser.send("Target.activateTarget", { targetId }).catch(() => {});
   const session = {
     send: (method, params = {}) => browser.send(method, params, sessionId),
     on: (method, fn) => browser.on(method, (params, sid) => { if (sid === sessionId) fn(params); }),
@@ -76,7 +75,7 @@ async function closeTab(session) {
 
 async function evaluate(session, expression, awaitPromise = true) {
   const r = await session.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise });
-  if (r.exceptionDetails) throw new Error("page eval failed: " + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails.text));
+  if (r.exceptionDetails) { try { fs.writeFileSync("/tmp/evalfail.js", String(expression)); } catch {} dbg("EVAL FAIL: " + String(r.exceptionDetails.exception?.description || r.exceptionDetails.text).slice(0, 200)); throw new Error("page eval failed: " + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails.text)); }
   return r.result?.value;
 }
 
@@ -174,10 +173,35 @@ function xclipImage(path) {
 
 async function uploadFiles(session, paths) {
   if (!paths.length) return true;
-  for (const p of paths) {
+  await session.send("Network.enable").catch(() => {});
+  let filePolls = 0;
+  session.on("Network.responseReceived", (params) => {
+    try {
+      const url = params?.response?.url || "";
+      if (/backend-api\/files/.test(url)) {
+        dbg("file net " + params?.response?.status + " " + url.slice(0, 90));
+        if (/backend-api\/files\/[^/?]+$/.test(url) && params?.response?.status === 200) filePolls += 1;
+      }
+    } catch {}
+  });
+  const thumbCount = () => evaluate(session, `document.querySelectorAll('img[src^="blob:"]').length + document.querySelectorAll('img[src^="data:"]').length`);
+  for (let pi = 0; pi < paths.length; pi++) {
+    const p = paths[pi];
+    if (pi > 0) {
+      // A paste replaces the previous attachment if it fires while ChatGPT is
+      // still processing, so wait until the chip count actually grew.
+      let grew = false;
+      for (let w = 0; w < 25; w++) {
+        await sleep(1000);
+        const n = await thumbCount().catch(() => 0);
+        if (n >= pi) { grew = true; break; }
+      }
+      dbg("chips " + (grew ? "grew" : "timeout") + " before " + String(p).split("/").pop());
+    }
     const name = String(p).split("/").pop();
     if (!/\.(png|jpe?g|webp)$/i.test(p)) { dbg("skip non-image " + name); continue; }
     if (!xclipImage(p)) return false;
+    await withTimeout(session.send("Page.bringToFront"), 3000).catch(() => {});
     await evaluate(session, `(() => {
       const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
       if (!el) return false;
@@ -200,9 +224,46 @@ async function uploadFiles(session, paths) {
       if (seen.thumbs > 0 || seen.byName) { ok = true; dbg("pasted " + name + " (" + JSON.stringify(seen) + ")"); break; }
     }
     if (!ok) { dbg("paste failed for " + name); return false; }
-    await sleep(1200);
+    const pollsBefore = filePolls;
+    let uploaded = false;
+    for (let i = 0; i < 30; i++) {
+      await sleep(1000);
+      if (filePolls > pollsBefore) { uploaded = true; dbg("upload completed for " + name); break; }
+    }
+    if (!uploaded) dbg("no upload poll for " + name);
+    await sleep(800);
   }
   return true;
+}
+
+async function waitIdle(session, timeoutMs = 180000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    const idle = await evaluate(session, `(() => ({
+      stop: !!document.querySelector('[data-testid="stop-button"]'),
+      composer: !!(document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]')),
+      len: ((document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]'))?.innerText || "").trim().length,
+    }))()`).catch(() => null);
+    if (idle && !idle.stop && idle.composer && !idle.len) return true;
+  }
+  throw new Error("chat did not become idle");
+}
+
+// The composer replaces a pasted image with the next one, so multiple files go
+// out as separate messages; the real task text rides on the last one.
+async function sendWithFiles(session, paths, text) {
+  if (!paths.length) { await typeAndSend(session, text); return; }
+  const N = paths.length;
+  for (let i = 0; i < N - 1; i++) {
+    if (!(await uploadFiles(session, [paths[i]]))) throw new Error("file not attached: " + paths[i].split("/").pop());
+    await typeAndSend(session, `Изображение ${i + 1} из ${N}.`);
+    dbg("part " + (i + 1) + "/" + N + " sent");
+    await waitIdle(session, 180000);
+  }
+  if (!(await uploadFiles(session, [paths[N - 1]]))) throw new Error("file not attached: " + paths[N - 1].split("/").pop());
+  await typeAndSend(session, text);
+  dbg("final sent");
 }
 
 async function typeAndSend(session, text) {
@@ -221,6 +282,18 @@ async function typeAndSend(session, text) {
     sel.removeAllRanges(); sel.addRange(range);
     return document.activeElement === el || el.contains(document.activeElement);
   })()`);
+  if (!focused) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await sleep(600);
+      focused = await evaluate(session, `(() => {
+        const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
+        if (!el) return false;
+        el.focus();
+        return document.activeElement === el || el.contains(document.activeElement);
+      })()`).catch(() => false);
+      if (focused) break;
+    }
+  }
   if (!focused) throw new Error("composer not focused");
   dbg("composer focused");
   await sleep(300);
@@ -245,20 +318,17 @@ async function typeAndSend(session, text) {
     return true;
   })()`).catch(() => false);
   dbg("composer len before send " + (await composerLen()));
-  const ok1 = await clickSend();
-  dbg("clickSend=" + ok1);
-  await sleep(1500);
-  dbg("composer len after send " + (await composerLen()));
-  if (await composerLen()) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await clickSend();
+    await sleep(1500);
+    if (!(await composerLen())) break;
     for (const [type, code] of [["rawKeyDown", 13], ["keyUp", 13]]) {
       await session.send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: code, nativeVirtualKeyCode: code, unmodifiedText: type === "rawKeyDown" ? "\r" : undefined });
     }
     await sleep(1500);
+    if (!(await composerLen())) break;
   }
-  if (await composerLen()) {
-    await clickSend();
-    await sleep(1500);
-  }
+  dbg("composer len after send " + (await composerLen()));
   if (await composerLen()) throw new Error("message was not sent (composer still has text)");
   await sleep(500);
 }
@@ -291,15 +361,19 @@ const readConversation = async (session, gptId) => {
   return r.messages || [];
 };
 
-async function waitReply(session, gptId, timeoutMs = 240000) {
+async function waitReply(session, gptId, timeoutMs = 240000, minMessages = 0) {
   const deadline = Date.now() + timeoutMs;
   let last = "", stable = 0;
   while (Date.now() < deadline) {
     await sleep(2000);
     let messages;
     try { messages = await readConversation(session, gptId); } catch { continue; }
-    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-    const text = lastAssistant?.content || "";
+    // Only a trailing assistant message counts: with multi-file sends the
+    // conversation already holds replies to the earlier image parts.
+    if (messages.length < minMessages) continue;
+    const lastMsg = messages[messages.length - 1];
+    if (!lastMsg || lastMsg.role !== "assistant") { stable = 0; last = ""; continue; }
+    const text = lastMsg.content;
     const stopping = await evaluate(session, `!!document.querySelector('[data-testid="stop-button"]')`).catch(() => false);
     if (!stopping && text && text === last) { stable += 1; if (stable >= 2) return { reply: text, messages }; }
     else { stable = 0; last = text; }
@@ -323,13 +397,14 @@ async function opNewChat(body) {
     // "New chat" page did not open that menu, which broke attachments.
     const paths = await saveUploads(body.files);
     dbg("uploads " + paths.length);
-    if (paths.length && !(await uploadFiles(session, paths))) throw new Error("files were not attached to the chat");
-    await typeAndSend(session, body.text || body.title || "Start Grace Planner chat");
+    await sendWithFiles(session, paths, body.text || body.title || "Start Grace Planner chat");
     dbg("sent");
     let gptId = null;
     for (let i = 0; i < 60; i++) { gptId = await evaluate(session, chatIdExpr); if (gptId) break; await sleep(1000); }
     if (!gptId) throw new Error("conversation id not resolved");
-    const { reply, messages } = await waitReply(session, gptId);
+    let baseline = 0;
+    try { baseline = (await readConversation(session, gptId)).length; } catch {}
+    const { reply, messages } = await waitReply(session, gptId, 240000, baseline + 1);
     const chat = { siteChatId: body.siteChatId || null, gptId, url: "https://chatgpt.com/c/" + gptId, title: body.title || "New chat", messages, updatedAt: Date.now() };
     state.chats = state.chats.filter((c) => c.gptId !== gptId);
     state.chats.push(chat); save();
@@ -345,8 +420,7 @@ async function opSend(body) {
     ({ session } = await openTab("https://chatgpt.com/c/" + body.gptId));
     await waitComposer(session, 60000);
     const paths = await saveUploads(body.files);
-    if (paths.length && !(await uploadFiles(session, paths))) throw new Error("files were not attached to the chat");
-    await typeAndSend(session, body.text);
+    await sendWithFiles(session, paths, body.text);
     const { reply, messages } = await waitReply(session, body.gptId);
     const chat = state.chats.find((c) => c.gptId === body.gptId);
     if (chat) { chat.messages = messages; chat.updatedAt = Date.now(); save(); }
@@ -357,8 +431,8 @@ async function opSend(body) {
 // Sync the whole Grace Planner project: every conversation that exists on the
 // ChatGPT side (even one created by hand) shows up on the site, and chats that
 // lost their reply on the site side get their messages back from the server.
-let lastSyncAt = 0;
-let syncPromise = null;
+// Sync the Grace Planner project: the project page (what the user actually
+// sees on chatgpt.com) is the source of truth for the chat list.
 async function opSync(body) {
   if (syncPromise) return syncPromise;
   if (Date.now() - lastSyncAt < 60000 && !body.force) return { ok: true, chats: state.chats, cached: true };
@@ -369,31 +443,46 @@ async function opSync(body) {
       ({ session } = await openTab(PROJECT_URL));
       await waitComposer(session, 60000);
       const list = await evaluate(session, `(async () => {
-        const s = await (await fetch('/api/auth/session')).json();
-        if (!s.accessToken) return { error: 'no accessToken' };
-        const r = await fetch('/backend-api/conversations?gizmo_id=${GIZMO_ID}&order=updated&limit=25', { headers: { authorization: 'Bearer ' + s.accessToken } });
-        if (!r.ok) return { error: 'http ' + r.status };
-        const j = await r.json();
-        return { items: (j.items || []).map(i => ({ gptId: i.id, title: i.title, updateTime: i.update_time })) };
+        const scope = document.querySelector('main') || document.body;
+        const seen = new Map();
+        for (let round = 0; round < 15; round++) {
+          for (const a of scope.querySelectorAll('a[href*="/c/"]')) {
+            if (a.closest('nav, aside')) continue;
+            const m = (a.getAttribute('href') || '').match(/\\/c\\/([0-9a-f-]{20,60})/i);
+            if (!m) continue;
+            const title = (a.innerText || '').trim().split(String.fromCharCode(10))[0].slice(0, 120);
+            if (!seen.has(m[1])) seen.set(m[1], title);
+          }
+          const more = [...scope.querySelectorAll('button, a')].find((b) => /show more|показать ещё|показати більше/i.test(b.innerText || ''));
+          if (!more) break;
+          more.click();
+          await new Promise((r) => setTimeout(r, 1200));
+        }
+        return { items: [...seen.entries()].map(([gptId, title]) => ({ gptId, title })) };
       })()`);
-      if (!list || list.error) {
-        if (list && /429/.test(list.error)) { lastSyncAt = Date.now(); return { ok: true, chats: state.chats, cached: true, rateLimited: true }; }
-        throw new Error("project list failed: " + (list?.error || "empty"));
+      if (!list || list.error || !Array.isArray(list.items)) {
+        lastSyncAt = Date.now();
+        return { ok: true, chats: state.chats, cached: true, rateLimited: true };
       }
+      // The ChatGPT project list is the source of truth: conversations hidden
+      // or deleted there disappear from the relay state too.
       const byId = new Map(state.chats.map((c) => [c.gptId, c]));
       const fresh = [];
-      for (const it of list.items || []) {
+      const rebuilt = [];
+      for (const it of list.items) {
         const known = byId.get(it.gptId);
+        let chat;
         if (known) {
           if (!known.title || known.title === "New chat") known.title = it.title || known.title;
           known.updatedAt = (it.updateTime || 0) * 1000 || known.updatedAt;
-          fresh.push(known);
+          chat = known;
         } else {
-          const chat = { siteChatId: body.siteChatId || null, gptId: it.gptId, url: "https://chatgpt.com/c/" + it.gptId, title: it.title || "Grace Planner chat", messages: [], updatedAt: (it.updateTime || 0) * 1000 };
-          state.chats.push(chat);
-          fresh.push(chat);
+          chat = { siteChatId: body.siteChatId || null, gptId: it.gptId, url: "https://chatgpt.com/c/" + it.gptId, title: it.title || "Grace Planner chat", messages: [], updatedAt: Date.now() };
         }
+        rebuilt.push(chat);
+        fresh.push(chat);
       }
+      state.chats = rebuilt;
       if (body.gptId) {
         const chat = byId.get(body.gptId);
         if (chat) { try { chat.messages = await readConversation(session, body.gptId); chat.updatedAt = Date.now(); } catch {} }
@@ -406,11 +495,66 @@ async function opSync(body) {
       }
       lastSyncAt = Date.now();
       save();
-      return { ok: true, chats: state.chats };
+      return { ok: true, chats: state.chats, authoritative: true };
     } finally { if (session) await closeTab(session); releaseSlot(); }
   })();
   syncPromise = run.finally(() => { syncPromise = null; });
   return syncPromise;
+}
+
+async function opDelete(body) {
+  const ids = [].concat(body.gptId || []);
+  if (!ids.length) throw new Error("gptId required");
+  await slot();
+  let session = null;
+  try {
+    ({ session } = await openTab(PROJECT_URL));
+    await waitComposer(session, 60000);
+    for (const gptId of ids) {
+      await evaluate(session, `(async () => {
+        const s = await (await fetch('/api/auth/session')).json();
+        const r = await fetch('/backend-api/conversation/' + ${JSON.stringify(gptId)}, { method: 'PATCH', headers: { authorization: 'Bearer ' + s.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ is_visible: false }) });
+        return r.status;
+      })()`).catch(() => "err");
+    }
+    state.chats = state.chats.filter((c) => !ids.includes(c.gptId));
+    save();
+    return { ok: true, removed: ids.length };
+  } finally { if (session) await closeTab(session); releaseSlot(); }
+}
+
+// Write site-side titles into the ChatGPT conversations so both sides show
+// the same names (the site list is the source of truth for titles).
+async function opRename(body) {
+  const items = (body.items || []).filter((it) => it && it.gptId && it.title);
+  if (!items.length) return { ok: true, renamed: 0 };
+  await slot();
+  let session = null;
+  try {
+    ({ session } = await openTab(PROJECT_URL));
+    await waitComposer(session, 60000);
+    const results = [];
+    for (const it of items) {
+      const status = await evaluate(session, `(async () => {
+        const s = await (await fetch('/api/auth/session')).json();
+        const r = await fetch('/backend-api/conversation/' + ${JSON.stringify(it.gptId)}, { method: 'PATCH', headers: { authorization: 'Bearer ' + s.accessToken, 'content-type': 'application/json' }, body: JSON.stringify({ title: ${JSON.stringify(it.title)} }) });
+        return r.status;
+      })()`).catch(() => "err");
+      results.push({ gptId: it.gptId, status });
+      const chat = state.chats.find((c) => c.gptId === it.gptId);
+      if (chat && String(status) === "200") chat.title = it.title;
+    }
+    save();
+    return { ok: true, renamed: results.filter((r) => String(r.status) === "200").length, results };
+  } finally { if (session) await closeTab(session); releaseSlot(); }
+}
+
+// Hard reset of the relay-side chat list (used when the project is emptied).
+function opReset() {
+  state.chats = [];
+  save();
+  lastSyncAt = Date.now();
+  return { ok: true, chats: [], authoritative: true };
 }
 
 function opList() { return { ok: true, chats: state.chats }; }
@@ -435,6 +579,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/chat/new") return json(res, 200, await opNewChat(body));
     if (req.method === "POST" && url.pathname === "/chat/send") return json(res, 200, await opSend(body));
     if (req.method === "POST" && url.pathname === "/chat/sync") return json(res, 200, await opSync(body));
+    if (req.method === "POST" && url.pathname === "/chat/delete") return json(res, 200, await opDelete(body));
+    if (req.method === "POST" && url.pathname === "/chat/rename") return json(res, 200, await opRename(body));
+    if (req.method === "POST" && url.pathname === "/chat/reset") return json(res, 200, opReset());
     if (req.method === "POST" && url.pathname === "/chat/list") return json(res, 200, opList());
     return json(res, 404, { error: "unknown endpoint" });
   } catch (error) {
