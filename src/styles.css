@@ -108,6 +108,21 @@ button, textarea, input { font: inherit; }
 
 .chat-tab-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
+.open-chat-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: inherit;
+  font-size: 14px;
+  text-decoration: none;
+  opacity: 0.6;
+}
+
+.open-chat-link:hover { background: #e6e6e6; opacity: 1; }
+
 .chat-tab-open {
   flex: 0 0 auto;
   width: 20px;
