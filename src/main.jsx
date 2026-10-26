@@ -331,7 +331,10 @@ function App() {
     if (chatId === activeChat.id) setActiveChatId(list[0].id);
   }
   function renameChat(chatId, title) {
-    setChats((current) => current.map((chat) => chat.id === chatId ? { ...chat, title: title.slice(0, 80) || "New chat" } : chat));
+    const clean = title.slice(0, 80) || "New chat";
+    setChats((current) => current.map((chat) => chat.id === chatId ? { ...chat, title: clean } : chat));
+    const chat = chats.find((c) => c.id === chatId);
+    if (chat?.gptId) bridgeFetch("rename", { items: [{ gptId: chat.gptId, title: clean }] }, 120000).catch(() => {});
   }
   function deleteChat(chatId) {
     setChats((current) => {
