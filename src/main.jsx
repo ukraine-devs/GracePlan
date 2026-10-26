@@ -556,8 +556,12 @@ function App() {
         const replyId = crypto.randomUUID();
         const gptState = await bridgeState().catch(() => null);
         const twin = gptState?.chats?.find((c) => c.gptId === gptId);
-        writeChat((chat) => ({ ...chat, gptId: gptId, updatedAt: Date.now(), messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] }));
+        const pending = !String(result.reply || "").trim();
+        writeChat((chat) => pending
+          ? { ...chat, gptId: gptId, updatedAt: Date.now(), messages: nextMessages }
+          : { ...chat, gptId: gptId, updatedAt: Date.now(), messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] });
         setChats((current) => current.map((item) => item.id === chatId ? { ...item, gptMessages: twin?.messages || result.messages } : item));
+        if (pending) stage("bridge", "Ответ появится в течение минуты", "done");
       } catch (bridgeError) {
         setError("Мост ChatGPT: " + bridgeError.message);
         writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось получить ответ ChatGPT: " + bridgeError.message }] }));

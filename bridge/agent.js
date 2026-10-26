@@ -484,18 +484,14 @@ async function opNewChat(body) {
     let gptId = null;
     for (let i = 0; i < 60; i++) { gptId = await evaluate(session, chatIdExpr); if (gptId) break; await sleep(1000); }
     if (!gptId) throw new Error("conversation id not resolved");
-    let baseline = 0;
-    try { baseline = (await readConversation(session, gptId)).length; } catch {}
-    let reply = "", messages = [];
-    try { const waited = await waitReply(session, gptId, 120000, baseline + 1); reply = waited.reply; messages = waited.messages; }
-    catch {
-      reply = await waitReplyDom(session, 180000);
-      messages = [{ role: "user", content: body.text || body.title || "" }, { role: "assistant", content: reply }];
-    }
+    // Return as soon as the conversation exists. The reply arrives through the
+    // site's regular state sync, so a slow or rate-limited read never holds the
+    // request open past the platform limit.
+    const messages = [{ role: "user", content: body.text || body.title || "" }];
     const chat = { siteChatId: body.siteChatId || null, gptId, url: projectUrl(gptId), title: body.title || "New chat", messages, updatedAt: Date.now() };
     state.chats = state.chats.filter((c) => c.gptId !== gptId);
     state.chats.push(chat); save();
-    return { ok: true, gptId, url: chat.url, reply, messages };
+    return { ok: true, gptId, url: chat.url, reply: "", messages, pending: true };
   } finally { if (session) await closeTab(session); releaseSlot(); }
 }
 
@@ -515,17 +511,9 @@ async function opPublish(body) {
     let gptId = null;
     for (let i = 0; i < 60; i++) { gptId = await evaluate(session, chatIdExpr); if (gptId) break; await sleep(1000); }
     if (!gptId) throw new Error("conversation id not resolved");
-    let baseline = 0;
-    try { baseline = (await readConversation(session, gptId)).length; } catch {}
-    let messages = [];
-    try { messages = (await waitReply(session, gptId, 180000, baseline + 1)).messages; }
-    catch {
-      try { messages = await readConversation(session, gptId); }
-      catch {
-        const reply = await waitReplyDom(session, 180000).catch(() => "");
-        messages = [{ role: "user", content: text }, ...(reply ? [{ role: "assistant", content: reply }] : [])];
-      }
-    }
+    // Same contract as new/send: the conversation exists now, its answer is
+    // picked up by the status poll instead of holding this request open.
+    const messages = [{ role: "user", content: text }];
     const chat = { siteChatId: body.siteChatId || null, gptId, url: projectUrl(gptId), title: String(body.title || "Grace Planner chat").slice(0, 120), messages, updatedAt: Date.now() };
     state.chats = state.chats.filter((c) => c.gptId !== gptId && !(body.siteChatId && c.siteChatId === body.siteChatId));
     state.chats.push(chat); save();
@@ -581,6 +569,21 @@ async function opHealth() {
       return { account, plan, chats: [...rows.entries()].map(([gptId, title]) => ({ gptId, title })), url: location.href };
     })()`);
     const projectChats = info?.chats || [];
+    // Replies are fetched here as well: the site polls this status regularly,
+    // so a chat whose last turn is the user's gets its answer without waiting
+    // for a full sync.
+    const awaiting = state.chats
+      .filter((c) => {
+        const messages = c.messages || [];
+        return !messages.length || messages[messages.length - 1].role === "user";
+      })
+      .slice(0, 4);
+    for (const chat of awaiting) {
+      try {
+        const messages = await readConversation(session, chat.gptId);
+        if (messages.length > (chat.messages || []).length) { chat.messages = messages; chat.updatedAt = Date.now(); save(); }
+      } catch {}
+    }
     const ids = new Set(projectChats.map((c) => c.gptId));
     const published = state.chats.filter((c) => c.gptId);
     const value = {
@@ -594,6 +597,7 @@ async function opHealth() {
       siteChats: state.chats.length,
       siteChatsLinked: published.length,
       missingOnProject: published.filter((c) => !ids.has(c.gptId)).map((c) => ({ gptId: c.gptId, title: c.title })),
+      chats: state.chats,
       checkedAt: Date.now(),
     };
     healthCache = { at: Date.now(), value };
@@ -610,16 +614,15 @@ async function opSend(body) {
     await waitComposer(session, 60000);
     const paths = await saveUploads(body.files);
     await sendWithFiles(session, paths, body.text);
-    let reply = "", messages = [];
-    try { const waited = await waitReply(session, body.gptId); reply = waited.reply; messages = waited.messages; }
-    catch {
-      reply = await waitReplyDom(session, 180000);
-      const known = state.chats.find((c) => c.gptId === body.gptId);
-      messages = [...((known?.messages) || []), { role: "user", content: body.text }, { role: "assistant", content: reply }];
-    }
+    // Same as a new chat: the reply comes from the state sync, not from this
+    // request, so sending stays fast and survives rate limits.
     const chat = state.chats.find((c) => c.gptId === body.gptId);
-    if (chat) { chat.messages = messages; chat.updatedAt = Date.now(); save(); }
-    return { ok: true, gptId: body.gptId, reply, messages };
+    if (chat) {
+      chat.messages = [...(chat.messages || []), { role: "user", content: body.text }];
+      chat.updatedAt = Date.now();
+      save();
+    }
+    return { ok: true, gptId: body.gptId, reply: "", messages: chat?.messages || [], pending: true };
   } finally { if (session) await closeTab(session); releaseSlot(); }
 }
 
