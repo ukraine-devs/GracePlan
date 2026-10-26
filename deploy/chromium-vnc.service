@@ -1,0 +1,17 @@
+# Chromium for the Grace Bridge, shown on the VNC desktop (display :1).
+# Install: cp to ~/.config/systemd/user/, then
+#   systemctl --user daemon-reload && systemctl --user enable --now chromium-vnc
+[Unit]
+Description=Chromium on VNC display :1 (Grace Planner + ChatGPT project)
+After=default.target
+
+[Service]
+Environment=DISPLAY=:1
+Environment=XAUTHORITY=/home/ubuntu/.Xauthority
+Environment=HOME=/home/ubuntu
+ExecStart=/snap/bin/chromium --password-store=basic --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=/home/ubuntu/snap/chromium/common/chromium --no-first-run --no-default-browser-check --start-maximized https://chatgpt.com/g/g-p-6ade243a41e48191b297ec2ac5c7e822-grace-planner/project
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
