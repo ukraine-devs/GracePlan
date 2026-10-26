@@ -212,7 +212,7 @@ function App() {
   useEffect(() => { isSendingRef.current = isSending; }, [isSending]);
   const activeIdRef = React.useRef(activeChat?.id || null);
   useEffect(() => { activeIdRef.current = activeChat?.id || null; }, [activeChat?.id]);
-  const mergeServerChats = (serverChats) => {
+  const mergeServerChats = (serverChats, authoritative) => {
     setChats((current) => {
       const busyId = isSendingRef.current ? activeIdRef.current : null;
       const byGpt = new Map();
@@ -248,7 +248,11 @@ function App() {
       }
       for (const id of localOnly) {
         const chat = current.find((c) => c.id === id);
-        if (chat) result.push({ ...chat });
+        if (!chat) continue;
+        // A fresh full sync that no longer lists a paired chat means it was
+        // deleted on the ChatGPT side; mirror that instead of keeping a ghost.
+        if (authoritative && chat.gptId) continue;
+        result.push({ ...chat });
       }
       result.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
       return result;
@@ -273,7 +277,7 @@ function App() {
     const pullSync = async () => {
       try {
         const synced = await bridgeFetch("sync", {}, 180000);
-        if (live && synced?.chats?.length) mergeServerChats(synced.chats);
+        if (live && synced?.chats) mergeServerChats(synced.chats, !!synced.authoritative);
       } catch {}
     };
     pullState();
