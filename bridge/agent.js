@@ -433,6 +433,8 @@ async function opSend(body) {
 // lost their reply on the site side get their messages back from the server.
 // Sync the Grace Planner project: the project page (what the user actually
 // sees on chatgpt.com) is the source of truth for the chat list.
+let lastSyncAt = 0;
+let syncPromise = null;
 async function opSync(body) {
   if (syncPromise) return syncPromise;
   if (Date.now() - lastSyncAt < 60000 && !body.force) return { ok: true, chats: state.chats, cached: true };
@@ -481,6 +483,13 @@ async function opSync(body) {
         }
         rebuilt.push(chat);
         fresh.push(chat);
+      }
+      // Conversations created seconds ago are not in the page list yet, so keep
+      // recent state entries that the DOM list has not picked up.
+      const domIds = new Set(rebuilt.map((c) => c.gptId));
+      const cutoff = Date.now() - 10 * 60 * 1000;
+      for (const old of state.chats) {
+        if (!domIds.has(old.gptId) && (old.updatedAt || 0) > cutoff) rebuilt.push(old);
       }
       state.chats = rebuilt;
       if (body.gptId) {
