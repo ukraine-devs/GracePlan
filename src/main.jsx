@@ -283,7 +283,7 @@ function App() {
     };
     pullState();
     pullSync();
-    const timerState = window.setInterval(pullState, 25000);
+    const timerState = window.setInterval(pullState, 15000);
     const timerSync = window.setInterval(pullSync, 300000);
     return () => { live = false; window.clearInterval(timerState); window.clearInterval(timerSync); };
   }, []);
@@ -470,6 +470,15 @@ function App() {
         let gptId = activeChat.gptId;
         let result;
         setCurrentStep(4);
+        // A chat created a second ago is still getting its twin; wait for it a
+        // little so the first message lands in the same conversation instead of
+        // spawning a second one.
+        for (let attempt = 0; attempt < 4 && !gptId; attempt++) {
+          const twinState = await bridgeState().catch(() => null);
+          const twin = twinState?.chats?.find((c) => c.siteChatId === chatId);
+          if (twin?.gptId) { gptId = twin.gptId; writeChat((chat) => ({ ...chat, gptId: twin.gptId, gptUrl: twin.url })); break; }
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+        }
         if (gptId) {
           stage("bridge", "Отправка в ChatGPT (сервер)");
           result = await bridgeSend(gptId, text, submittedFiles);
@@ -479,11 +488,18 @@ function App() {
           gptId = result.gptId;
           writeChat((chat) => ({ ...chat, gptId: gptId, gptUrl: result.url }));
         }
-        stage("bridge", "Ответ ChatGPT получен", "done");
         const replyId = crypto.randomUUID();
         const gptState = await bridgeState().catch(() => null);
         const twin = gptState?.chats?.find((c) => c.gptId === gptId);
-        writeChat((chat) => ({ ...chat, gptId: gptId, messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] }));
+        if (result.pending || !result.reply) {
+          // The answer is still being generated: keep the user message only and
+          // let the server sync deliver the reply into this chat.
+          stage("bridge", "Ждём ответ ChatGPT", "done");
+          writeChat((chat) => ({ ...chat, gptId: gptId, messages: [...nextMessages] }));
+        } else {
+          stage("bridge", "Ответ ChatGPT получен", "done");
+          writeChat((chat) => ({ ...chat, gptId: gptId, messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] }));
+        }
         setChats((current) => current.map((item) => item.id === chatId ? { ...item, gptMessages: twin?.messages || result.messages } : item));
       } catch (bridgeError) {
         setError("Мост ChatGPT: " + bridgeError.message);
