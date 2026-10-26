@@ -214,31 +214,56 @@ function App() {
   useEffect(() => { activeIdRef.current = activeChat?.id || null; }, [activeChat?.id]);
   const mergeServerChats = (serverChats) => {
     setChats((current) => {
-      let next = current.map((c) => ({ ...c }));
-      let changed = false;
-      for (const twin of serverChats || []) {
-        if (!twin?.gptId) continue;
-        const remote = (twin.messages || []).map((m) => ({ id: crypto.randomUUID(), role: m.role === "user" ? "user" : "assistant", content: m.content }));
-        const idx = next.findIndex((c) => c.gptId === twin.gptId);
-        if (idx === -1) {
-          if (!remote.length) continue;
-          next = [{ id: crypto.randomUUID(), title: twin.title || "Grace Planner chat", messages: [welcome, ...remote], createdAt: twin.updatedAt || Date.now(), gptId: twin.gptId, gptUrl: twin.url }, ...next];
-          changed = true;
-          continue;
-        }
-        const chat = next[idx];
-        if (remote.length) next[idx] = { ...chat, gptMessages: remote, gptUrl: chat.gptUrl || twin.url };
-        const localMessages = chat.messages || [];
-        const hasAssistant = localMessages.some((m) => m.role === "assistant" && !/Не удалось/i.test(m.content || ""));
-        const busy = isSendingRef.current && activeIdRef.current === chat.id;
-        if (remote.length && !busy && !hasAssistant) {
-          next[idx] = { ...next[idx], messages: [welcome, ...remote] };
-          changed = true;
-        }
+      const busyId = isSendingRef.current ? activeIdRef.current : null;
+      const byGpt = new Map();
+      const bySite = new Map();
+      for (const t of serverChats || []) {
+        if (!t?.gptId) continue;
+        byGpt.set(t.gptId, t);
+        if (t.siteChatId) bySite.set(t.siteChatId, t);
       }
-      return changed ? next : current;
+      const used = new Set();
+      const result = [];
+      const localOnly = new Set(current.map((c) => c.id));
+      for (const chat of current) {
+        const twin = chat.gptId ? byGpt.get(chat.gptId) : (bySite.get(chat.id) || null);
+        if (!twin) continue;
+        localOnly.delete(chat.id);
+        used.add(twin.gptId);
+        const remote = (twin.messages || []).map((m) => ({ id: crypto.randomUUID(), role: m.role === "user" ? "user" : "assistant", content: m.content }));
+        const localContent = (chat.messages || []).slice(1);
+        const localHasAssistant = localContent.some((m) => m.role === "assistant" && !/Не удалось/i.test(m.content || ""));
+        const busy = busyId === chat.id;
+        let messages = chat.messages;
+        if (remote.length && !busy && (remote.length > localContent.length || !localHasAssistant)) messages = [welcome, ...remote];
+        const title = (!chat.title || chat.title === "New chat") ? (twin.title || chat.title) : chat.title;
+        result.push({ ...chat, gptId: twin.gptId, gptUrl: chat.gptUrl || twin.url, title, messages, gptMessages: remote.length ? remote : chat.gptMessages, updatedAt: Math.max(chat.updatedAt || 0, twin.updatedAt || 0) });
+      }
+      for (const twin of serverChats || []) {
+        if (!twin?.gptId || used.has(twin.gptId)) continue;
+        used.add(twin.gptId);
+        const remote = (twin.messages || []).map((m) => ({ id: crypto.randomUUID(), role: m.role === "user" ? "user" : "assistant", content: m.content }));
+        if (!remote.length) continue;
+        result.push({ id: crypto.randomUUID(), title: twin.title || "Grace Planner chat", messages: [welcome, ...remote], createdAt: twin.updatedAt || Date.now(), gptId: twin.gptId, gptUrl: twin.url, updatedAt: twin.updatedAt || Date.now() });
+      }
+      for (const id of localOnly) {
+        const chat = current.find((c) => c.id === id);
+        if (chat) result.push({ ...chat });
+      }
+      result.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+      return result;
     });
   };
+  const twinQueueRef = React.useRef(new Set());
+  useEffect(() => {
+    const need = chats.filter((c) => !c.gptId && !twinQueueRef.current.has(c.id)).slice(0, 2);
+    for (const chat of need) {
+      twinQueueRef.current.add(chat.id);
+      bridgeNewChat(chat.id, chat.title, "Новый чат Grace Planner из приложения. Подтверди одним словом: готов.", []).then((res) => {
+        setChats((current) => current.map((x) => x.id === chat.id ? { ...x, gptId: res.gptId, gptUrl: res.url } : x));
+      }).catch(() => { setTimeout(() => twinQueueRef.current.delete(chat.id), 60000); });
+    }
+  }, [chats]);
   useEffect(() => {
     let live = true;
     const pullState = async () => {
@@ -290,6 +315,7 @@ function App() {
     setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setInput(""); setError(""); setFiles([]);
     // A chat created on the site must exist in the Grace Planner project on
     // chatgpt.com right away, so open its server-side twin immediately.
+    twinQueueRef.current.add(chat.id);
     bridgeNewChat(chat.id, chat.title, "Новый чат Grace Planner из приложения. Подтверди одним словом: готов.", []).then((result) => {
       setChats((current) => current.map((item) => item.id === chat.id ? { ...item, gptId: result.gptId, gptUrl: result.url } : item));
     }).catch((err) => setError("Мост ChatGPT: " + err.message));
