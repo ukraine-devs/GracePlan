@@ -769,7 +769,7 @@ function App() {
       <div className="bridge-bar" aria-label="ChatGPT project status">
         <span className={`bridge-dot ${bridgeInfo?.online ? "ok" : "off"}`} aria-hidden="true" />
         <span className="bridge-account" title="Аккаунт ChatGPT, в котором работает мост">{bridgeInfo?.account || "ChatGPT: проверяю мост…"}</span>
-        <span className="bridge-counts">проект: {bridgeInfo ? (bridgeInfo.projectChats?.length ?? 0) : "…"} · сайт: {chats.length}</span>
+        <span className="bridge-counts">проект: {bridgeInfo ? (bridgeInfo.projectChats?.length ?? 0) : "…"} · сайт: {chats.filter((chat) => (chat.messages || []).some((message) => message.role === "user")).length}</span>
         {bridgeInfo?.projectUrl && <a className="bridge-link" href={bridgeInfo.projectUrl} target="_blank" rel="noreferrer">Открыть проект</a>}
         {activeChat?.gptUrl && <a className="bridge-link" href={activeChat.gptUrl} target="_blank" rel="noreferrer">Этот чат в ChatGPT</a>}
         {activeChat && needsPublish(activeChat) && <button type="button" className="bridge-publish" disabled={publishing} onClick={() => publishChat(activeChat).catch((err) => setError("Публикация в ChatGPT: " + err.message))}>{publishing ? "Публикую…" : "Опубликовать в ChatGPT"}</button>}

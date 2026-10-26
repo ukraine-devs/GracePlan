@@ -787,6 +787,8 @@ async function opDelete(body) {
     }
     state.chats = state.chats.filter((c) => !ids.includes(c.gptId));
     save();
+    // The visible list changed, so the cached project snapshot is stale.
+    healthCache = { at: 0, value: null };
     return { ok: true, removed: ids.length };
   } finally { if (session) await closeTab(session); releaseSlot(); }
 }
@@ -884,3 +886,16 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => console.log("grace-bridge relay (raw CDP) on", PORT));
 sweepTabs(1).catch(() => {});
 ensureDesktopTabs().catch(() => {});
+// The project tab must stay in the window the user watches: if it is closed by
+// hand (or by a crashed operation), it is reopened in the background.
+setInterval(async () => {
+  try {
+    const pages = (await cdpList()).filter((t) => t.type === "page");
+    const hasProject = pages.some((t) => (t.url || "").startsWith("https://chatgpt.com/g/" + PROJECT_KEY));
+    if (hasProject) return;
+    const v = await cdpVersion();
+    const browser = await CdpSession.open(v.webSocketDebuggerUrl);
+    await browser.send("Target.createTarget", { url: PROJECT_URL, background: true });
+    browser.close();
+  } catch {}
+}, 30000);
