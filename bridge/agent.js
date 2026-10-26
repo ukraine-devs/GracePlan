@@ -60,7 +60,9 @@ class CdpSession {
 }
 
 let activeRequests = 0;
-const MAX_PARALLEL = 3;
+// Two lanes: the visible project tab (sends, publications) and an auxiliary tab
+// for status reads. Sends themselves are serialised, because they share one tab.
+const MAX_PARALLEL = 2;
 // A wedged ChatGPT tab must not block the whole relay: waiting for a slot is
 // bounded and fails loudly instead of hanging every later request.
 async function slot(timeoutMs = 90000) {
@@ -73,21 +75,53 @@ async function slot(timeoutMs = 90000) {
 }
 function releaseSlot() { activeRequests = Math.max(0, activeRequests - 1); }
 
-async function openTab(url) {
+const SITE_URL = "https://graceplanner.vercel.app/";
+
+async function openTab(url, reuseTargetId = null) {
   const v = await cdpVersion();
   const browser = await CdpSession.open(v.webSocketDebuggerUrl);
-  const { targetId } = await browser.send("Target.createTarget", { url, background: true });
+  const pinned = !!reuseTargetId;
+  const targetId = reuseTargetId || (await browser.send("Target.createTarget", { url, background: true })).targetId;
   const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
   const session = {
+    pinned,
     send: (method, params = {}) => browser.send(method, params, sessionId),
     on: (method, fn) => browser.on(method, (params, sid) => { if (sid === sessionId) fn(params); }),
     close: async () => {
-      try { await browser.send("Target.closeTarget", { targetId }); } catch {}
+      if (!pinned) { try { await browser.send("Target.closeTarget", { targetId }); } catch {} }
       try { browser.close(); } catch {}
     },
   };
   await session.send("Runtime.enable").catch(() => {});
   return { session, targetId };
+}
+
+// The window watched over VNC keeps one ChatGPT project tab: work happens in
+// that tab instead of throwing new windows on screen.
+async function openProjectTab() {
+  const base = "https://chatgpt.com/g/" + PROJECT_KEY + "/";
+  const existing = (await cdpList()).find((t) => t.type === "page" && (t.url || "").startsWith(base));
+  if (existing) {
+    const { session } = await openTab(existing.url, existing.id);
+    await session.send("Page.bringToFront").catch(() => {});
+    return { session, targetId: existing.id, reused: true };
+  }
+  return openTab(PROJECT_URL);
+}
+
+// Desktop layout of the VNC window: Grace Planner in front, the project beside it.
+async function ensureDesktopTabs() {
+  const v = await cdpVersion();
+  const browser = await CdpSession.open(v.webSocketDebuggerUrl);
+  try {
+    const pages = (await cdpList()).filter((t) => t.type === "page");
+    const hasProject = pages.some((t) => (t.url || "").startsWith("https://chatgpt.com/g/" + PROJECT_KEY));
+    let siteId = pages.find((t) => (t.url || "").startsWith("https://graceplanner.vercel.app"))?.id;
+    if (!hasProject) await browser.send("Target.createTarget", { url: PROJECT_URL, background: true });
+    if (!siteId) siteId = (await browser.send("Target.createTarget", { url: SITE_URL, background: true })).targetId;
+    await browser.send("Target.activateTarget", { targetId: siteId }).catch(() => {});
+    dbg("desktop tabs ready");
+  } finally { try { browser.close(); } catch {} }
 }
 
 async function closeTab(session) {
@@ -470,8 +504,8 @@ async function opNewChat(body) {
   await slot();
   let session = null;
   try {
-    ({ session } = await openTab(PROJECT_URL));
-    dbg("tab opened");
+    ({ session } = await openProjectTab());
+    dbg("project tab ready");
     await waitComposer(session, 90000);
     dbg("composer ready");
     // The project root composer starts a brand-new conversation when a message
@@ -505,7 +539,7 @@ async function opPublish(body) {
   await slot();
   let session = null;
   try {
-    ({ session } = await openTab(PROJECT_URL));
+    ({ session } = await openProjectTab());
     await waitComposer(session, 90000);
     await sendTranscript(session, text);
     let gptId = null;
@@ -823,3 +857,4 @@ const server = http.createServer(async (req, res) => {
 });
 server.listen(PORT, () => console.log("grace-bridge relay (raw CDP) on", PORT));
 sweepTabs(1).catch(() => {});
+ensureDesktopTabs().catch(() => {});
