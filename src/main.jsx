@@ -265,6 +265,33 @@ function App() {
   // Keep the site in step with the server: restore replies lost to bridge
   // errors, and surface every Grace Planner conversation that exists on the
   // ChatGPT side, including chats created by hand.
+  // Mirror bootstrap: the server list is the truth, so the site opens with
+  // exactly the conversations ChatGPT holds, together with their messages.
+  const bootstrappedRef = React.useRef(false);
+  useEffect(() => {
+    if (bootstrappedRef.current) return;
+    bootstrappedRef.current = true;
+    (async () => {
+      const state = await bridgeState().catch(() => null);
+      if (!state?.chats?.length) return;
+      const mapped = state.chats
+        .filter((c) => c?.gptId && (c.messages || []).length)
+        .map((c) => ({
+          id: crypto.randomUUID(),
+          title: c.title || "Grace Planner chat",
+          messages: [welcome, ...(c.messages || []).map((m) => ({ id: crypto.randomUUID(), role: m.role === "user" ? "user" : "assistant", content: m.content }))],
+          createdAt: c.updatedAt || Date.now(),
+          updatedAt: c.updatedAt || Date.now(),
+          gptId: c.gptId,
+          gptUrl: c.url,
+        }));
+      if (mapped.length) {
+        mapped.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        setChats(mapped);
+        setActiveChatId(mapped[0].id);
+      }
+    })();
+  }, []);
   const isSendingRef = React.useRef(false);
   useEffect(() => { isSendingRef.current = isSending; }, [isSending]);
   const activeIdRef = React.useRef(activeChat?.id || null);
