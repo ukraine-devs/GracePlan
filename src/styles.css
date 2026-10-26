@@ -989,3 +989,4 @@ textarea::placeholder { color: #8a8a8a; }
 .bridge-link{color:#2563eb;text-decoration:none;border-bottom:1px dotted rgba(37,99,235,.4)}
 .bridge-publish{margin-left:auto;border:1px solid rgba(37,99,235,.35);background:#eff4ff;color:#1d4ed8;border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer}
 .bridge-publish:disabled{opacity:.6;cursor:default}
+.bridge-publish + .bridge-publish{margin-left:6px}
