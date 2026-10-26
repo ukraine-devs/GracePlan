@@ -65,16 +65,36 @@ function createChat() { return { id: crypto.randomUUID(), title: "New chat", mes
 
 // ---- Grace Bridge: site <-> server-side ChatGPT (Instant) channel ----
 function bridgeFetch(action, payload, timeoutMs = 300000) {
+  const isRead = action === "state" || action === "health";
   return fetch("/api/bridge?action=" + action, {
-    method: action === "state" ? "GET" : "POST",
-    headers: action === "state" ? undefined : { "Content-Type": "application/json" },
-    body: action === "state" ? undefined : JSON.stringify(payload),
+    method: isRead ? "GET" : "POST",
+    headers: isRead ? undefined : { "Content-Type": "application/json" },
+    body: isRead ? undefined : JSON.stringify(payload),
     signal: AbortSignal.timeout(timeoutMs),
   }).then(async (response) => {
     const data = await response.json().catch(() => ({ error: "Bad bridge response" }));
     if (!response.ok || data.error) throw new Error(data.error || "Bridge error " + response.status);
     return data;
   });
+}
+// The site chat and the ChatGPT project must hold the same conversation, so the
+// full transcript is what gets published, not a placeholder prompt.
+function chatTranscript(chat) {
+  const lines = [`Grace Planner — чат «${chat.title || "Без названия"}»`, "", "Ниже полная расшифровка диалога из Grace Planner.", ""];
+  for (const message of (chat.messages || []).slice(1)) {
+    const text = String(message.content || "").trim();
+    if (!text) continue;
+    lines.push((message.role === "user" ? "Пользователь: " : "Ассистент: ") + text, "");
+    for (const artifact of message.artifacts || []) lines.push(`[файл: ${artifact.name}]`);
+  }
+  lines.push("Продолжай этот диалог с текущего места.");
+  return lines.join("\n");
+}
+function publishToProject(chat) {
+  return bridgeFetch("publish", { siteChatId: chat.id, title: chat.title, transcript: chatTranscript(chat) }, 420000);
+}
+async function bridgeHealth() {
+  try { return await bridgeFetch("health", null, 90000); } catch { return null; }
 }
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -100,13 +120,19 @@ async function bridgeState() {
 function normalizeMessages(messages) {
   return (Array.isArray(messages) ? messages : []).filter((message) => message.content !== "Команда уже показана. Ожидаю новые данные.");
 }
+// Placeholder twins created by older builds carry no real content; they must
+// neither appear on the site nor be republished into the project.
+function isPlaceholderChat(chat) {
+  const body = (chat?.messages || []).slice(1);
+  if (!body.length) return false;
+  const stub = /^Новый чат Grace Planner из приложения/;
+  return body.length <= 2 && stub.test(body[0].content || "")
+    && body.every((message) => stub.test(message.content || "") || /^Готов\.?$/i.test((message.content || "").trim()));
+}
 function loadChats() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    if (Array.isArray(saved) && saved.length) return saved.map((chat) => ({ ...chat, messages: normalizeMessages(chat.messages) }));
-    const oldMessages = JSON.parse(localStorage.getItem("grace-plan-chat-history") || "null");
-    if (Array.isArray(oldMessages) && oldMessages.length) return [{ ...createChat(), title: "Saved chat", messages: normalizeMessages(oldMessages) }];
-  } catch { return [createChat()]; }
+  // Chats are not kept in the browser: the list comes from the server, so every
+  // visitor sees the same conversations. A single empty draft is all that exists
+  // locally until the first message is sent.
   return [createChat()];
 }
 function makeTitle(text) { return text.length > 28 ? `${text.slice(0, 28)}...` : text || "New chat"; }
@@ -162,7 +188,7 @@ async function makeContactSheets(photos) {
 
 function App() {
   const [chats, setChats] = useState(loadChats);
-  const [activeChatId, setActiveChatId] = useState(() => localStorage.getItem(ACTIVE_KEY) || null);
+  const [activeChatId, setActiveChatId] = useState(null);
   const [input, setInput] = useState("");
   const [files, setFiles] = useState([]);
   const [isSending, setIsSending] = useState(false);
@@ -182,6 +208,8 @@ function App() {
   const [isPreparingFiles, setIsPreparingFiles] = useState(false);
   const [error, setError] = useState("");
   const [showStatus, setShowStatus] = useState(true);
+  const [bridgeInfo, setBridgeInfo] = useState(null);
+  const [publishing, setPublishing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [accept, setAccept] = useState("image/jpeg,image/png,image/webp,.zip,application/zip");
   const containerRef = useRef(null);
@@ -193,18 +221,46 @@ function App() {
   const messages = activeChat?.messages || [welcome];
   const attachmentPreviews = useMemo(() => files.map((file) => ({ file, url: URL.createObjectURL(file) })), [files]);
   const agentState = isPreparingFiles ? "reading" : !isSending ? "idle" : currentStep <= 1 ? "reading" : currentStep <= 3 ? "command" : currentStep === 4 ? activityTone : currentStep === 5 ? "command" : "writing";
+  // A chat is only "in the project" when its conversation is listed there;
+  // chats created by an older relay live outside the project and need republishing.
+  const projectChatIds = new Set((bridgeInfo?.projectChats || []).map((chat) => chat.gptId));
+  const needsPublish = (chat) => !!bridgeInfo && !!chat && (chat.messages || []).some((message) => message.role === "user") && (!chat.gptId || !projectChatIds.has(chat.gptId));
+  const pendingChats = chats.filter((chat) => needsPublish(chat) && !chat.publishedAt);
+  // Publishes every site chat that has no twin in the project yet, one by one,
+  // and reports exactly how many were transferred or failed.
+  const syncAll = async () => {
+    if (!pendingChats.length || publishing) return;
+    setPublishing(true);
+    setError("");
+    let done = 0;
+    const failed = [];
+    for (const chat of pendingChats) {
+      try {
+        const res = await publishToProject(chat);
+        setChats((current) => current.map((x) => x.id === chat.id ? { ...x, gptId: res.gptId, gptUrl: res.url, publishedAt: Date.now() } : x));
+        done += 1;
+      } catch (err) {
+        failed.push(chat.title || "чат");
+      }
+    }
+    setPublishing(false);
+    bridgeHealth().then((info) => { if (info) setBridgeInfo(info); });
+    if (failed.length) setError(`Перенесено ${done}, не удалось ${failed.length}: ${failed.join(", ")}`);
+  };
 
   useEffect(() => { if (!activeChatId && chats[0]) setActiveChatId(chats[0].id); }, [activeChatId, chats]);
-  useEffect(() => { let live = true; hydrateArtifacts(chats).then((value) => { if (live) setChats(value); }).catch(() => {}); return () => { live = false; }; }, []);
+  // Legacy chat history kept in the browser is removed for good: chats live only
+  // on the server, so every visitor sees the same list.
   useEffect(() => {
     try {
-      const safeChats = chats.map((chat) => ({ ...chat, messages: chat.messages.map((message) => ({
-        ...message, artifacts: message.artifacts?.map(({ data, ...metadata }) => metadata)
-      })) }));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(safeChats));
-    } catch { setError("Историю не удалось сохранить в браузере."); }
-  }, [chats]);
-  useEffect(() => { if (activeChat?.id) localStorage.setItem(ACTIVE_KEY, activeChat.id); }, [activeChat?.id]);
+      localStorage.removeItem("grace-plan-chat-sessions");
+      localStorage.removeItem("grace-plan-chat-history");
+      localStorage.removeItem("grace-plan-active-chat");
+    } catch {}
+  }, []);
+  useEffect(() => { let live = true; hydrateArtifacts(chats).then((value) => { if (live) setChats(value); }).catch(() => {}); return () => { live = false; }; }, []);
+  // Active tab is view state only: chats themselves live on the server.
+
   // Keep the site in step with the server: restore replies lost to bridge
   // errors, and surface every Grace Planner conversation that exists on the
   // ChatGPT side, including chats created by hand.
@@ -235,8 +291,13 @@ function App() {
         const localHasAssistant = localContent.some((m) => m.role === "assistant" && !/Не удалось/i.test(m.content || ""));
         const busy = busyId === chat.id;
         let messages = chat.messages;
-        if (remote.length && !busy && (remote.length > localContent.length || !localHasAssistant)) messages = [welcome, ...remote];
-        const title = (!chat.title || chat.title === "New chat") ? (twin.title || chat.title) : chat.title;
+        // Placeholder twins and published transcripts must never overwrite the
+        // real conversation as it was typed on the site.
+        const remoteIsPlaceholder = remote.length > 0 && /^Новый чат Grace Planner из приложения/.test(remote[0].content || "");
+        const remoteIsTranscript = remote.length > 0 && /^Grace Planner — чат «/.test(remote[0].content || "");
+        if (remote.length && !busy && !remoteIsPlaceholder && !remoteIsTranscript && (remote.length > localContent.length || !localHasAssistant)) messages = [welcome, ...remote];
+        // Names come from the server list, so every browser shows the same one.
+        const title = twin.title && twin.title !== "New chat" ? twin.title : chat.title;
         result.push({ ...chat, gptId: twin.gptId, gptUrl: chat.gptUrl || twin.url, title, messages, gptMessages: remote.length ? remote : chat.gptMessages, updatedAt: Math.max(chat.updatedAt || 0, twin.updatedAt || 0) });
       }
       for (const twin of serverChats || []) {
@@ -251,24 +312,66 @@ function App() {
         if (!chat) continue;
         // A fresh full sync that no longer lists a paired chat means it was
         // deleted on the ChatGPT side; mirror that instead of keeping a ghost.
+        // Chats that still hold real user content are kept and republished
+        // rather than dropped, so site content is never lost to a sync.
         const stale = authoritative && (Date.now() - (chat.createdAt || 0)) > 180000;
-        if (authoritative && (chat.gptId || stale)) continue;
+        const hasUserContent = (chat.messages || []).some((m) => m.role === "user");
+        if (authoritative && (chat.gptId || stale) && !hasUserContent) continue;
         result.push({ ...chat });
       }
       result.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
-      return result;
+      const clean = result.filter((chat) => !isPlaceholderChat(chat)
+        && !(chat.gptId && !(chat.messages || []).some((message) => message.role === "user")));
+      // The server list is the only list: an untouched draft disappears as soon
+      // as the server has conversations to show, so nobody sees an extra tab.
+      const serverOnes = clean.filter((chat) => chat.gptId);
+      if (!serverOnes.length) return clean;
+      return clean.filter((chat) => chat.gptId || (chat.messages || []).some((message) => message.role === "user"));
     });
   };
   const twinQueueRef = React.useRef(new Set());
+  const publishChat = React.useCallback(async (chat) => {
+    setPublishing(true);
+    try {
+      const res = await publishToProject(chat);
+      setChats((current) => current.map((x) => x.id === chat.id ? { ...x, gptId: res.gptId, gptUrl: res.url, publishedAt: Date.now() } : x));
+      setError("");
+      bridgeHealth().then((info) => { if (info) setBridgeInfo(info); });
+      return res;
+    } finally { setPublishing(false); }
+  }, []);
+  // Publication is explicit: a background copy from several open browsers at
+  // once created duplicates, so the site only publishes on request.
+
   useEffect(() => {
-    const need = chats.filter((c) => !c.gptId && !twinQueueRef.current.has(c.id)).slice(0, 2);
-    for (const chat of need) {
-      twinQueueRef.current.add(chat.id);
-      bridgeNewChat(chat.id, chat.title, "Новый чат Grace Planner из приложения. Подтверди одним словом: готов.", []).then((res) => {
-        setChats((current) => current.map((x) => x.id === chat.id ? { ...x, gptId: res.gptId, gptUrl: res.url } : x));
-      }).catch(() => { setTimeout(() => twinQueueRef.current.delete(chat.id), 60000); });
-    }
+    let live = true;
+    let timer = null;
+    let attempt = 0;
+    const pull = async () => {
+      const info = await bridgeHealth();
+      if (!live) return;
+      if (info) { setBridgeInfo(info); attempt = 0; timer = setTimeout(pull, 60000); return; }
+      attempt += 1;
+      timer = setTimeout(pull, attempt <= 3 ? 5000 : 60000);
+    };
+    pull();
+    return () => { live = false; clearTimeout(timer); };
+  }, []);
+  useEffect(() => {
+    // Placeholder twins from older builds are removed from the relay list once
+    // (the ChatGPT conversations themselves are left alone).
+    const ids = chats.filter((chat) => chat.gptId && isPlaceholderChat(chat)).map((chat) => chat.gptId);
+    if (!ids.length) return;
+    bridgeFetch("drop", { gptIds: ids }, 30000)
+      .then(() => bridgeHealth().then((info) => { if (info) setBridgeInfo(info); }))
+      .catch(() => {});
   }, [chats]);
+  useEffect(() => {
+    // Automatic republishing stays off: every new message already goes through
+    // the bridge, and a background loop would fill the account with duplicates.
+    // Legacy chats are published from the explicit button in the status strip.
+    return undefined;
+  }, []);
   useEffect(() => {
     let live = true;
     const pullState = async () => {
@@ -283,7 +386,7 @@ function App() {
     };
     pullState();
     pullSync();
-    const timerState = window.setInterval(pullState, 15000);
+    const timerState = window.setInterval(pullState, 5000);
     const timerSync = window.setInterval(pullSync, 300000);
     return () => { live = false; window.clearInterval(timerState); window.clearInterval(timerSync); };
   }, []);
@@ -338,6 +441,9 @@ function App() {
     if (chat?.gptId) bridgeFetch("rename", { items: [{ gptId: chat.gptId, title: clean }] }, 120000).catch(() => {});
   }
   function deleteChat(chatId) {
+    // The list is shared, so a deletion has to happen on the server too.
+    const target = chats.find((chat) => chat.id === chatId);
+    if (target?.gptId) bridgeFetch("delete", { gptId: target.gptId }, 120000).catch(() => {});
     setChats((current) => {
       const remaining = current.filter((chat) => chat.id !== chatId);
       if (remaining.length) {
@@ -470,15 +576,6 @@ function App() {
         let gptId = activeChat.gptId;
         let result;
         setCurrentStep(4);
-        // A chat created a second ago is still getting its twin; wait for it a
-        // little so the first message lands in the same conversation instead of
-        // spawning a second one.
-        for (let attempt = 0; attempt < 4 && !gptId; attempt++) {
-          const twinState = await bridgeState().catch(() => null);
-          const twin = twinState?.chats?.find((c) => c.siteChatId === chatId);
-          if (twin?.gptId) { gptId = twin.gptId; writeChat((chat) => ({ ...chat, gptId: twin.gptId, gptUrl: twin.url })); break; }
-          await new Promise((resolve) => setTimeout(resolve, 2500));
-        }
         if (gptId) {
           stage("bridge", "Отправка в ChatGPT (сервер)");
           result = await bridgeSend(gptId, text, submittedFiles);
@@ -486,21 +583,18 @@ function App() {
           stage("bridge", "Создаю чат в Grace Planner (ChatGPT)");
           result = await bridgeNewChat(chatId, activeChat.title, text || "Please review the attached files.", submittedFiles);
           gptId = result.gptId;
-          writeChat((chat) => ({ ...chat, gptId: gptId, gptUrl: result.url }));
+          writeChat((chat) => ({ ...chat, gptId: gptId, gptUrl: result.url, updatedAt: Date.now() }));
         }
+        stage("bridge", "Ответ ChatGPT получен", "done");
         const replyId = crypto.randomUUID();
         const gptState = await bridgeState().catch(() => null);
         const twin = gptState?.chats?.find((c) => c.gptId === gptId);
-        if (result.pending || !result.reply) {
-          // The answer is still being generated: keep the user message only and
-          // let the server sync deliver the reply into this chat.
-          stage("bridge", "Ждём ответ ChatGPT", "done");
-          writeChat((chat) => ({ ...chat, gptId: gptId, messages: [...nextMessages] }));
-        } else {
-          stage("bridge", "Ответ ChatGPT получен", "done");
-          writeChat((chat) => ({ ...chat, gptId: gptId, messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] }));
-        }
+        const pending = !String(result.reply || "").trim();
+        writeChat((chat) => pending
+          ? { ...chat, gptId: gptId, updatedAt: Date.now(), messages: nextMessages }
+          : { ...chat, gptId: gptId, updatedAt: Date.now(), messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] });
         setChats((current) => current.map((item) => item.id === chatId ? { ...item, gptMessages: twin?.messages || result.messages } : item));
+        if (pending) stage("bridge", "Ответ появится в течение минуты", "done");
       } catch (bridgeError) {
         setError("Мост ChatGPT: " + bridgeError.message);
         writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось получить ответ ChatGPT: " + bridgeError.message }] }));
@@ -672,6 +766,15 @@ function App() {
         ))}</nav>
         <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><span className={`agent-indicator ${agentState}`} role="status" aria-label={`Agent status: ${agentState}`} title={`Activity: ${agentState}. Animated UI indicator, not hidden model reasoning.`} /></div>
       </header>
+      <div className="bridge-bar" aria-label="ChatGPT project status">
+        <span className={`bridge-dot ${bridgeInfo?.online ? "ok" : "off"}`} aria-hidden="true" />
+        <span className="bridge-account" title="Аккаунт ChatGPT, в котором работает мост">{bridgeInfo?.account || "ChatGPT: проверяю мост…"}</span>
+        <span className="bridge-counts">проект: {bridgeInfo ? (bridgeInfo.projectChats?.length ?? 0) : "…"} · сайт: {chats.filter((chat) => (chat.messages || []).some((message) => message.role === "user")).length} · не перенесено: {bridgeInfo ? pendingChats.length : "…"}</span>
+        {bridgeInfo?.projectUrl && <a className="bridge-link" href={bridgeInfo.projectUrl} target="_blank" rel="noreferrer">Открыть проект</a>}
+        {activeChat?.gptUrl && <a className="bridge-link" href={activeChat.gptUrl} target="_blank" rel="noreferrer">Этот чат в ChatGPT</a>}
+        {activeChat && needsPublish(activeChat) && <button type="button" className="bridge-publish" disabled={publishing} onClick={() => publishChat(activeChat).catch((err) => setError("Публикация в ChatGPT: " + err.message))}>{publishing ? "Публикую…" : "Опубликовать в ChatGPT"}</button>}
+        {pendingChats.length > 1 && <button type="button" className="bridge-publish" disabled={publishing} onClick={syncAll}>{publishing ? "Переношу…" : `Перенести все (${pendingChats.length})`}</button>}
+      </div>
       <div className="messages" aria-live="polite" ref={messagesRef}>
         {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Grace AI Planner"}</span><MessageText text={message.content} />{message.execution?.length > 0 && <details className="command-log" open><summary>Execution commands</summary>{message.execution.map((item) => <div className={`command-row ${item.status}`} key={item.id}><strong>· {item.label}</strong><span>{item.detail}</span></div>)}</details>}{message.artifacts?.filter((artifact) => message.role === "user" || artifact.type === "pdf").map((artifact) => artifact.data ? artifact.type === "image" ? <button className="preview-card" type="button" onClick={() => openPreview(artifact.data, artifact.name)} key={artifact.name}><img src={artifact.data} alt={artifact.name} /><span>{artifact.name}</span></button> : <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}><Download size={16} aria-hidden="true" />{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл недоступний</span>)}</article>)}
         {isSending && <article className="message assistant progress-message"><span>Grace AI Planner</span>

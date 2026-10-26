@@ -48,11 +48,12 @@ const waiters = [];
 async function slot() { if (activeRequests >= MAX_PARALLEL) await new Promise((r) => waiters.push(r)); activeRequests++; }
 function releaseSlot() { activeRequests--; const next = waiters.shift(); if (next) next(); }
 
-async function openTab(url) {
+async function openTab(url, background = false) {
   const v = await cdpVersion();
   const browser = await CdpSession.open(v.webSocketDebuggerUrl);
-  const { targetId } = await browser.send("Target.createTarget", { url, background: true });
+  const { targetId } = await browser.send("Target.createTarget", { url, background });
   const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
+  await browser.send("Target.activateTarget", { targetId }).catch(() => {});
   const session = {
     send: (method, params = {}) => browser.send(method, params, sessionId),
     on: (method, fn) => browser.on(method, (params, sid) => { if (sid === sessionId) fn(params); }),
@@ -71,6 +72,22 @@ async function closeTab(session) {
     if (pages.length <= 1) return;
     await session.close();
   } catch {}
+}
+
+// A long-lived tab used only to READ conversations. Reading via the API does not
+// touch the rate-limited history endpoint, so replies can be pulled in a loop.
+let reader = null;
+async function getReader() {
+  try {
+    if (reader) {
+      const alive = await withTimeout(evaluate(reader.session, "1+1"), 4000, null);
+      if (alive === 2) return reader;
+    }
+  } catch {}
+  reader = await openTab(PROJECT_URL, true);
+  await waitComposer(reader.session, 60000);
+  dbg("reader tab ready");
+  return reader;
 }
 
 async function evaluate(session, expression, awaitPromise = true) {
@@ -298,13 +315,31 @@ async function typeAndSend(session, text) {
   dbg("composer focused");
   await sleep(300);
   await evaluate(session, `(() => { const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]'); if (!el) return false; el.focus(); document.execCommand('selectAll'); document.execCommand('delete'); return true; })()`).catch(() => false);
-  const ins = await evaluate(session, `(() => {
-    const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
-    if (!el) return 'no-el';
-    el.focus();
-    const ok = document.execCommand('insertText', false, ${JSON.stringify(msg)});
-    return ok ? 'ok' : 'execCommand-false';
-  })()`).catch((e) => "err:" + e.message);
+  // CDP text insertion first: it does not depend on the tab being focused.
+  await withTimeout(session.send("Page.bringToFront"), 3000).catch(() => {});
+  const readLen = () => evaluate(session, `((document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]'))?.innerText || "").length`).catch(() => 0);
+  const preLen = await readLen();
+  if (preLen > 0) {
+    for (const [type, code] of [["rawKeyDown", 65], ["keyUp", 65]]) {
+      await session.send("Input.dispatchKeyEvent", { type, modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 });
+    }
+    for (const type of ["rawKeyDown", "keyUp"]) {
+      await session.send("Input.dispatchKeyEvent", { type, key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 });
+    }
+    await sleep(250);
+  }
+  await withTimeout(session.send("Input.insertText", { text: msg }), 8000).catch(() => {});
+  let ins = "cdp";
+  if ((await readLen()) === 0) {
+    await evaluate(session, `(() => {
+      const el = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
+      if (!el) return false;
+      el.focus();
+      document.execCommand('insertText', false, ${JSON.stringify(msg)});
+      return true;
+    })()`).catch(() => false);
+    ins = "execCommand";
+  }
   dbg("insert=" + ins + " len=" + await evaluate(session, `((document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]'))?.innerText || "").length`));
   await sleep(500);
   // Send: only the composer's "Send" button actually submits in the current UI.
@@ -404,11 +439,18 @@ async function opNewChat(body) {
     if (!gptId) throw new Error("conversation id not resolved");
     let baseline = 0;
     try { baseline = (await readConversation(session, gptId)).length; } catch {}
-    const { reply, messages } = await waitReply(session, gptId, 240000, baseline + 1);
-    const chat = { siteChatId: body.siteChatId || null, gptId, url: "https://chatgpt.com/c/" + gptId, title: body.title || "New chat", messages, updatedAt: Date.now() };
+    const chat = { siteChatId: body.siteChatId || null, gptId, url: "https://chatgpt.com/c/" + gptId, title: body.title || "New chat", messages: [{ role: "user", content: body.text || body.title || "" }], updatedAt: Date.now() };
     state.chats = state.chats.filter((c) => c.gptId !== gptId);
     state.chats.push(chat); save();
-    return { ok: true, gptId, url: chat.url, reply, messages };
+    try {
+      const { reply, messages } = await waitReply(session, gptId, 120000, baseline + 1);
+      chat.messages = messages; chat.updatedAt = Date.now(); save();
+      return { ok: true, gptId, url: chat.url, reply, messages };
+    } catch (timeoutError) {
+      try { chat.messages = await readConversation(session, gptId); save(); } catch {}
+      dbg("reply pending for " + gptId);
+      return { ok: true, gptId, url: chat.url, pending: true, reply: "", messages: chat.messages };
+    }
   } finally { if (session) await closeTab(session); releaseSlot(); }
 }
 
@@ -421,10 +463,19 @@ async function opSend(body) {
     await waitComposer(session, 60000);
     const paths = await saveUploads(body.files);
     await sendWithFiles(session, paths, body.text);
-    const { reply, messages } = await waitReply(session, body.gptId);
     const chat = state.chats.find((c) => c.gptId === body.gptId);
-    if (chat) { chat.messages = messages; chat.updatedAt = Date.now(); save(); }
-    return { ok: true, gptId: body.gptId, reply, messages };
+    if (chat) { chat.messages = [...(chat.messages || []), { role: "user", content: body.text }]; chat.updatedAt = Date.now(); save(); }
+    try {
+      const { reply, messages } = await waitReply(session, body.gptId, 120000);
+      if (chat) { chat.messages = messages; chat.updatedAt = Date.now(); save(); }
+      return { ok: true, gptId: body.gptId, reply, messages };
+    } catch (timeoutError) {
+      let messages = [];
+      try { messages = await readConversation(session, body.gptId); } catch {}
+      if (chat && messages.length) { chat.messages = messages; chat.updatedAt = Date.now(); save(); }
+      dbg("reply pending for " + body.gptId);
+      return { ok: true, gptId: body.gptId, pending: true, reply: "", messages };
+    }
   } finally { if (session) await closeTab(session); releaseSlot(); }
 }
 
@@ -598,4 +649,22 @@ const server = http.createServer(async (req, res) => {
     return json(res, 500, { error: String(error.message || error) });
   }
 });
+// Guaranteed delivery: pull answers for chats whose last message is the user's.
+// Runs on the reader tab, so it opens no tabs and reloads no history.
+setInterval(async () => {
+  try {
+    const pending = state.chats.filter((c) => (c.messages || []).length && c.messages[c.messages.length - 1].role === "user").slice(0, 3);
+    if (!pending.length) return;
+    const r = await getReader();
+    let changed = false;
+    for (const chat of pending) {
+      try {
+        const msgs = await readConversation(r.session, chat.gptId);
+        if (msgs.length > (chat.messages || []).length) { chat.messages = msgs; chat.updatedAt = Date.now(); changed = true; dbg("refreshed " + chat.gptId); }
+      } catch {}
+    }
+    if (changed) save();
+  } catch {}
+}, 45000);
+
 server.listen(PORT, () => console.log("grace-bridge relay (raw CDP) on", PORT));
