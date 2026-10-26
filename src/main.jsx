@@ -761,20 +761,12 @@ function App() {
         <nav className="chat-tabs" aria-label="Chats">{chats.map((chat) => (
           <div className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} role="tab" aria-selected={chat.id === activeChat.id} tabIndex={0} onClick={() => setActiveChatId(chat.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setActiveChatId(chat.id); } }}>
             <span className="chat-tab-title">{chat.title}</span>
+            {chat.gptUrl && <a className="chat-tab-open" href={chat.gptUrl} target="_blank" rel="noreferrer" aria-label={"Открыть в ChatGPT: " + chat.title} title="Открыть в ChatGPT" onClick={(e) => e.stopPropagation()}>↗</a>}
             <button className="chat-tab-close" type="button" aria-label={"Закрыть вкладку: " + chat.title} onClick={(e) => { e.stopPropagation(); closeChat(chat.id); }}>×</button>
           </div>
         ))}</nav>
         <div className="header-actions"><button className="icon-button" type="button" onClick={newChat} aria-label="New chat" title="New chat"><Plus size={18} /></button><span className={`agent-indicator ${agentState}`} role="status" aria-label={`Agent status: ${agentState}`} title={`Activity: ${agentState}. Animated UI indicator, not hidden model reasoning.`} /></div>
       </header>
-      <div className="bridge-bar" aria-label="ChatGPT project status">
-        <span className={`bridge-dot ${bridgeInfo?.online ? "ok" : "off"}`} aria-hidden="true" />
-        <span className="bridge-account" title="Аккаунт ChatGPT, в котором работает мост">{bridgeInfo?.account || "ChatGPT: проверяю мост…"}</span>
-        <span className="bridge-counts">проект: {bridgeInfo ? (bridgeInfo.projectChats?.length ?? 0) : "…"} · сайт: {chats.filter((chat) => (chat.messages || []).some((message) => message.role === "user")).length} · не перенесено: {bridgeInfo ? pendingChats.length : "…"}</span>
-        {bridgeInfo?.projectUrl && <a className="bridge-link" href={bridgeInfo.projectUrl} target="_blank" rel="noreferrer">Открыть проект</a>}
-        {activeChat?.gptUrl && <a className="bridge-link" href={activeChat.gptUrl} target="_blank" rel="noreferrer">Этот чат в ChatGPT</a>}
-        {activeChat && needsPublish(activeChat) && <button type="button" className="bridge-publish" disabled={publishing} onClick={() => publishChat(activeChat).catch((err) => setError("Публикация в ChatGPT: " + err.message))}>{publishing ? "Публикую…" : "Опубликовать в ChatGPT"}</button>}
-        {pendingChats.length > 1 && <button type="button" className="bridge-publish" disabled={publishing} onClick={syncAll}>{publishing ? "Переношу…" : `Перенести все (${pendingChats.length})`}</button>}
-      </div>
       <div className="messages" aria-live="polite" ref={messagesRef}>
         {messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Grace AI Planner"}</span><MessageText text={message.content} />{message.execution?.length > 0 && <details className="command-log" open><summary>Execution commands</summary>{message.execution.map((item) => <div className={`command-row ${item.status}`} key={item.id}><strong>· {item.label}</strong><span>{item.detail}</span></div>)}</details>}{message.artifacts?.filter((artifact) => message.role === "user" || artifact.type === "pdf").map((artifact) => artifact.data ? artifact.type === "image" ? <button className="preview-card" type="button" onClick={() => openPreview(artifact.data, artifact.name)} key={artifact.name}><img src={artifact.data} alt={artifact.name} /><span>{artifact.name}</span></button> : <a className="artifact-link" href={artifact.data} download={artifact.name} key={artifact.name}><Download size={16} aria-hidden="true" />{artifact.name}</a> : <span className="artifact-unavailable" key={artifact.name}>{artifact.name} — файл недоступний</span>)}</article>)}
         {isSending && <article className="message assistant progress-message"><span>Grace AI Planner</span>
