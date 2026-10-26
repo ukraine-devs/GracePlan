@@ -435,7 +435,7 @@ function App() {
     const el = tabsRef.current;
     if (!el || event.pointerType === "touch") return;
     tabDragRef.current = { active: true, startX: event.clientX, startScroll: el.scrollLeft };
-    el.setPointerCapture?.(event.pointerId);
+    try { el.setPointerCapture?.(event.pointerId); } catch {}
     el.classList.add("dragging");
   }
   function tabDragMove(event) {
