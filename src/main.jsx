@@ -253,7 +253,15 @@ function App() {
   const [activeChatId, setActiveChatId] = useState(null);
   const [input, setInput] = useState("");
   const [files, setFiles] = useState([]);
-  const [isSending, setIsSending] = useState(false);
+  // Sending is per chat: a request in one chat must not lock the composer of
+  // another. `sendingIds` holds the chats with a request in flight.
+  const [sendingIds, setSendingIds] = useState(() => new Set());
+  const markSending = (id, value) => setSendingIds((current) => {
+    const next = new Set(current);
+    if (value) next.add(id); else next.delete(id);
+    return next;
+  });
+  const isSendingGlobal = sendingIds.size > 0;
   const [currentStep, setCurrentStep] = useState(-1);
   const [photoProgress, setPhotoProgress] = useState("");
   const [executionOpen, setExecutionOpen] = useState(true);
@@ -280,6 +288,9 @@ function App() {
   const messagesRef = useRef(null);
 
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) || chats[0], [activeChatId, chats]);
+
+  const isSending = sendingIds.has(activeChat?.id);
+  const setIsSending = (value) => markSending(activeChat?.id, value);
   const messages = activeChat?.messages || [welcome];
   const attachmentPreviews = useMemo(() => files.map((file) => ({ file, url: URL.createObjectURL(file) })), [files]);
   const agentState = isPreparingFiles ? "reading" : !isSending ? "idle" : currentStep <= 1 ? "reading" : currentStep <= 3 ? "command" : currentStep === 4 ? activityTone : currentStep === 5 ? "command" : "writing";
@@ -354,7 +365,7 @@ function App() {
     })();
   }, []);
   const isSendingRef = React.useRef(false);
-  useEffect(() => { isSendingRef.current = isSending; }, [isSending]);
+  useEffect(() => { isSendingRef.current = sendingIds.has(activeChat?.id); }, [sendingIds, activeChat?.id]);
   const activeIdRef = React.useRef(activeChat?.id || null);
   useEffect(() => { activeIdRef.current = activeChat?.id || null; }, [activeChat?.id]);
   const mergeServerChats = (rawServerChats, authoritative) => {
@@ -712,7 +723,7 @@ function App() {
     const userId = crypto.randomUUID();
     const nextMessages = [...messages, { id: userId, role: "user", content: text || "Please review the attached files." }];
     writeChat((chat) => ({ ...chat, title: chat.messages.length === 1 ? makeTitle(text || submittedFiles[0]?.name) : chat.title, messages: nextMessages }));
-    setInput(""); setError(""); setFiles([]); setIsSending(true);
+    setInput(""); setError(""); setFiles([]); markSending(chatId, true);
     setCurrentStep(submittedFiles.length ? 0 : 4); setPhotoProgress(""); setExecutionOpen(true);
     setProgressPreviews([]); setRunLog([]);
     const actualExecution = createExecutionLog(setRunLog);
@@ -752,7 +763,7 @@ function App() {
         setError("Мост ChatGPT: " + bridgeError.message);
         writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось получить ответ ChatGPT: " + bridgeError.message }] }));
       } finally {
-        setCurrentStep(-1); setIsSending(false); setProgressPreviews([]);
+        setCurrentStep(-1); markSending(chatId, false); setProgressPreviews([]);
       }
       return;
     }
@@ -908,7 +919,7 @@ function App() {
       stage("request-error", "Request failed: " + err.message, "failed");
       writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не вдалося завершити запит: " + err.message, execution: actualExecution.snapshot() }] }));
     } finally {
-      setCurrentStep(-1); setIsSending(false); setProgressPreviews([]);
+      setCurrentStep(-1); markSending(chatId, false); setProgressPreviews([]);
     }
   }
 
