@@ -326,7 +326,10 @@ function App() {
       // as the server has conversations to show, so nobody sees an extra tab.
       const serverOnes = clean.filter((chat) => chat.gptId);
       if (!serverOnes.length) return clean;
-      return clean.filter((chat) => chat.gptId || (chat.messages || []).some((message) => message.role === "user"));
+      // A just-created draft must survive the sync, so an empty new chat no
+      // longer disappears a second later.
+      const isFresh = (chat) => Date.now() - (chat.createdAt || 0) < 300000;
+      return clean.filter((chat) => chat.gptId || isFresh(chat) || (chat.messages || []).some((message) => message.role === "user"));
     });
   };
   const twinQueueRef = React.useRef(new Set());
