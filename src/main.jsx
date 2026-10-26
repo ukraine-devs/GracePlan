@@ -295,7 +295,12 @@ function App() {
         // real conversation as it was typed on the site.
         const remoteIsPlaceholder = remote.length > 0 && /^Новый чат Grace Planner из приложения/.test(remote[0].content || "");
         const remoteIsTranscript = remote.length > 0 && /^Grace Planner — чат «/.test(remote[0].content || "");
-        if (remote.length && !busy && !remoteIsPlaceholder && !remoteIsTranscript && (remote.length > localContent.length || !localHasAssistant)) messages = [welcome, ...remote];
+        // If the twin really carries the message typed on the site, its answer
+        // must be adopted even when the conversation starts with a stub.
+        const lastUser = [...localContent].reverse().find((m) => m.role === "user")?.content || "";
+        const remoteHasLocalUser = !!lastUser && remote.some((m) => m.role === "user" && String(m.content).includes(String(lastUser).slice(0, 30)));
+        const allowAdopt = remote.length && !busy && (remoteHasLocalUser || (!remoteIsPlaceholder && !remoteIsTranscript));
+        if (allowAdopt && (remote.length > localContent.length || !localHasAssistant)) messages = [welcome, ...remote];
         // Names come from the server list, so every browser shows the same one.
         const title = twin.title && twin.title !== "New chat" ? twin.title : chat.title;
         result.push({ ...chat, gptId: twin.gptId, gptUrl: chat.gptUrl || twin.url, title, messages, gptMessages: remote.length ? remote : chat.gptMessages, updatedAt: Math.max(chat.updatedAt || 0, twin.updatedAt || 0) });
