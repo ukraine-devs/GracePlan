@@ -31,6 +31,16 @@ export default async function handler(req, res) {
       return res.status(upstream.status).send(text);
     } catch (error) { return res.status(502).json({ error: "Bridge relay unreachable: " + (error.message || error) }); }
   }
+  // Live project status: which ChatGPT account the relay drives and how its
+  // chat list compares with the site.
+  if (req.method === "GET" && req.query.action === "health") {
+    try {
+      const upstream = await relayFetch(RELAY + "/project", { signal: AbortSignal.timeout(120000) });
+      const text = await upstream.text();
+      res.setHeader("Content-Type", "application/json");
+      return res.status(upstream.status).send(text);
+    } catch (error) { return res.status(502).json({ error: "Bridge relay unreachable: " + (error.message || error) }); }
+  }
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   let chunks = []; let size = 0;
@@ -38,7 +48,7 @@ export default async function handler(req, res) {
   const body = Buffer.concat(chunks).toString("utf8");
 
   const action = (req.query.action || req.url.split("/").pop() || "").toString();
-  const endpoint = ["new", "send", "sync", "list"].includes(action) ? "/chat/" + action : null;
+  const endpoint = ["new", "send", "publish", "sync", "list", "drop"].includes(action) ? "/chat/" + action : null;
   if (!endpoint) return res.status(400).json({ error: "Unknown action: " + action });
 
   try {

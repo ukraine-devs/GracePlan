@@ -6,8 +6,12 @@ import WebSocket from "ws";
 import { execFileSync, execSync } from "node:child_process";
 
 const CDP_HOST = "localhost:9222";
-const PROJECT_URL = "https://chatgpt.com/g/g-p-6ade243a41e48191b297ec2ac5c7e822-grace-planner/project";
-const GIZMO_ID = "g-p-6ade243a41e48191b297ec2ac5c7e822-grace-planner";
+const PROJECT_URL = process.env.GRACE_PROJECT_URL || "https://chatgpt.com/g/g-p-6ade243a41e48191b297ec2ac5c7e822-grace-planner/project";
+const GIZMO_ID = process.env.GRACE_PROJECT_ID || (PROJECT_URL.match(/\/g\/(g-p-[^/]+)/) || [])[1] || "g-p-6ade243a41e48191b297ec2ac5c7e822-grace-planner";
+// Every conversation this relay creates lives inside the project, so links shown
+// on the site must keep the project scope: /g/<project>/c/<id>.
+const PROJECT_BASE = "https://chatgpt.com/g/" + GIZMO_ID;
+const projectUrl = (gptId) => PROJECT_BASE + "/c/" + gptId;
 const PORT = 8899;
 const STATE_FILE = "/opt/grace-bridge/state.json";
 const UPLOAD_DIR = "/opt/grace-bridge/uploads";
@@ -266,6 +270,31 @@ async function sendWithFiles(session, paths, text) {
   dbg("final sent");
 }
 
+// Publishing a whole site-side transcript: one huge insert is slow and flaky,
+// so the text is split on paragraph boundaries and sent as consecutive parts.
+function splitForComposer(text, limit = 6000) {
+  const parts = [];
+  let current = "";
+  for (const block of String(text).split(/\n{2,}/)) {
+    const piece = block.length > limit ? block.slice(0, limit) : block;
+    if (!piece) continue;
+    if (current && (current + "\n\n" + piece).length > limit) { parts.push(current); current = piece; }
+    else current = current ? current + "\n\n" + piece : piece;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+async function sendTranscript(session, text) {
+  const parts = splitForComposer(text);
+  if (!parts.length) throw new Error("Пустой текст для публикации");
+  for (let i = 0; i < parts.length; i++) {
+    const prefix = parts.length > 1 ? `Часть ${i + 1}/${parts.length}\n\n` : "";
+    await typeAndSend(session, prefix + parts[i]);
+    await waitIdle(session, 240000).catch(() => {});
+    dbg("transcript part " + (i + 1) + "/" + parts.length + " sent");
+  }
+}
+
 async function typeAndSend(session, text) {
   const msg = text || "Please review the attached files.";
   // Focus the composer in-page: coordinate clicks miss when the tab viewport is
@@ -405,10 +434,98 @@ async function opNewChat(body) {
     let baseline = 0;
     try { baseline = (await readConversation(session, gptId)).length; } catch {}
     const { reply, messages } = await waitReply(session, gptId, 240000, baseline + 1);
-    const chat = { siteChatId: body.siteChatId || null, gptId, url: "https://chatgpt.com/c/" + gptId, title: body.title || "New chat", messages, updatedAt: Date.now() };
+    const chat = { siteChatId: body.siteChatId || null, gptId, url: projectUrl(gptId), title: body.title || "New chat", messages, updatedAt: Date.now() };
     state.chats = state.chats.filter((c) => c.gptId !== gptId);
     state.chats.push(chat); save();
     return { ok: true, gptId, url: chat.url, reply, messages };
+  } finally { if (session) await closeTab(session); releaseSlot(); }
+}
+
+// Publishes a site-side chat into the ChatGPT project with its real content,
+// so what the user sees on the site exists in the project as well.
+async function opPublish(body) {
+  const text = String(body.transcript || "").trim();
+  if (!text) throw new Error("transcript required");
+  if (text.length > 200000) throw new Error("transcript too long");
+  await slot();
+  let session = null;
+  try {
+    ({ session } = await openTab(PROJECT_URL));
+    await waitComposer(session, 90000);
+    await sendTranscript(session, text);
+    let gptId = null;
+    for (let i = 0; i < 60; i++) { gptId = await evaluate(session, chatIdExpr); if (gptId) break; await sleep(1000); }
+    if (!gptId) throw new Error("conversation id not resolved");
+    let baseline = 0;
+    try { baseline = (await readConversation(session, gptId)).length; } catch {}
+    let messages = [];
+    try { messages = (await waitReply(session, gptId, 180000, baseline + 1)).messages; }
+    catch { try { messages = await readConversation(session, gptId); } catch {} }
+    const chat = { siteChatId: body.siteChatId || null, gptId, url: projectUrl(gptId), title: String(body.title || "Grace Planner chat").slice(0, 120), messages, updatedAt: Date.now() };
+    state.chats = state.chats.filter((c) => c.gptId !== gptId && !(body.siteChatId && c.siteChatId === body.siteChatId));
+    state.chats.push(chat); save();
+    healthCache = { at: 0, value: null };
+    return { ok: true, gptId, url: chat.url, messages };
+  } finally { if (session) await closeTab(session); releaseSlot(); }
+}
+
+// What the site shows to the user: which ChatGPT account the relay drives,
+// which project it writes to, and whether the two chat lists agree.
+let healthCache = { at: 0, value: null };
+async function opHealth() {
+  if (healthCache.value && Date.now() - healthCache.at < 60000) return healthCache.value;
+  await slot();
+  let session = null;
+  try {
+    ({ session } = await openTab(PROJECT_URL));
+    await waitComposer(session, 60000);
+    // The project list renders lazily: wait for rows (or an empty state), then
+    // scroll, otherwise a half-rendered page reports fewer chats than exist.
+    for (let i = 0; i < 20; i++) {
+      const ready = await evaluate(session, `(() => {
+        const links = document.querySelectorAll('a[href*="/c/"]').length;
+        const text = document.querySelector('main')?.innerText || '';
+        return links > 0 || /no chats|нет чатов|поки нема|start a chat|create a chat/i.test(text);
+      })()`).catch(() => false);
+      if (ready) break;
+      await sleep(1000);
+    }
+    await sleep(1200);
+    const info = await evaluate(session, `(async () => {
+      let account = null, plan = null;
+      try { const s = await (await fetch('/api/auth/session')).json(); account = s?.user?.email || null; plan = s?.account?.planType || null; } catch (e) {}
+      const rows = new Map();
+      const scrollers = [...document.querySelectorAll('main, main *')]
+        .filter((n) => n.scrollHeight > n.clientHeight + 40 && n.clientHeight > 200).slice(0, 4);
+      for (let round = 0; round < 6; round++) {
+        for (const a of document.querySelectorAll('a[href*="/c/"]')) {
+          const m = (a.getAttribute('href') || '').match(/\\/c\\/([0-9a-f-]{20,60})/i);
+          if (!m || rows.has(m[1])) continue;
+          rows.set(m[1], (a.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120));
+        }
+        for (const s of scrollers) s.scrollTop = s.scrollHeight;
+        await new Promise((r) => setTimeout(r, 700));
+      }
+      return { account, plan, chats: [...rows.entries()].map(([gptId, title]) => ({ gptId, title })), url: location.href };
+    })()`);
+    const projectChats = info?.chats || [];
+    const ids = new Set(projectChats.map((c) => c.gptId));
+    const published = state.chats.filter((c) => c.gptId);
+    const value = {
+      ok: true,
+      online: true,
+      account: info?.account || null,
+      plan: info?.plan || null,
+      projectId: GIZMO_ID,
+      projectUrl: PROJECT_URL,
+      projectChats,
+      siteChats: state.chats.length,
+      siteChatsLinked: published.length,
+      missingOnProject: published.filter((c) => !ids.has(c.gptId)).map((c) => ({ gptId: c.gptId, title: c.title })),
+      checkedAt: Date.now(),
+    };
+    healthCache = { at: Date.now(), value };
+    return value;
   } finally { if (session) await closeTab(session); releaseSlot(); }
 }
 
@@ -417,7 +534,7 @@ async function opSend(body) {
   await slot();
   let session = null;
   try {
-    ({ session } = await openTab("https://chatgpt.com/c/" + body.gptId));
+    ({ session } = await openTab(projectUrl(body.gptId)));
     await waitComposer(session, 60000);
     const paths = await saveUploads(body.files);
     await sendWithFiles(session, paths, body.text);
@@ -479,7 +596,7 @@ async function opSync(body) {
           known.updatedAt = (it.updateTime || 0) * 1000 || known.updatedAt;
           chat = known;
         } else {
-          chat = { siteChatId: body.siteChatId || null, gptId: it.gptId, url: "https://chatgpt.com/c/" + it.gptId, title: it.title || "Grace Planner chat", messages: [], updatedAt: Date.now() };
+          chat = { siteChatId: body.siteChatId || null, gptId: it.gptId, url: projectUrl(it.gptId), title: it.title || "Grace Planner chat", messages: [], updatedAt: Date.now() };
         }
         rebuilt.push(chat);
         fresh.push(chat);
@@ -566,6 +683,18 @@ function opReset() {
   return { ok: true, chats: [], authoritative: true };
 }
 
+// Removes entries from the relay list only. The ChatGPT conversations stay
+// untouched; used to purge placeholder twins left by older builds.
+function opDrop(body) {
+  const ids = [].concat(body.gptIds || body.gptId || []).filter(Boolean);
+  if (!ids.length) throw new Error("gptIds required");
+  const before = state.chats.length;
+  state.chats = state.chats.filter((c) => !ids.includes(c.gptId));
+  save();
+  healthCache = { at: 0, value: null };
+  return { ok: true, dropped: before - state.chats.length, chats: state.chats };
+}
+
 function opList() { return { ok: true, chats: state.chats }; }
 
 // ---------- http relay ----------
@@ -584,13 +713,16 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && url.pathname === "/health") return json(res, 200, { ok: true, chats: state.chats.length });
     if (req.method === "GET" && url.pathname === "/state") return json(res, 200, state);
+    if (req.method === "GET" && url.pathname === "/project") return json(res, 200, await opHealth());
     const body = req.method === "POST" ? JSON.parse((await readBody(req)) || "{}") : {};
     if (req.method === "POST" && url.pathname === "/chat/new") return json(res, 200, await opNewChat(body));
     if (req.method === "POST" && url.pathname === "/chat/send") return json(res, 200, await opSend(body));
+    if (req.method === "POST" && url.pathname === "/chat/publish") return json(res, 200, await opPublish(body));
     if (req.method === "POST" && url.pathname === "/chat/sync") return json(res, 200, await opSync(body));
     if (req.method === "POST" && url.pathname === "/chat/delete") return json(res, 200, await opDelete(body));
     if (req.method === "POST" && url.pathname === "/chat/rename") return json(res, 200, await opRename(body));
     if (req.method === "POST" && url.pathname === "/chat/reset") return json(res, 200, opReset());
+    if (req.method === "POST" && url.pathname === "/chat/drop") return json(res, 200, opDrop(body));
     if (req.method === "POST" && url.pathname === "/chat/list") return json(res, 200, opList());
     return json(res, 404, { error: "unknown endpoint" });
   } catch (error) {

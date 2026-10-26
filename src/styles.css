@@ -979,3 +979,13 @@ textarea::placeholder { color: #8a8a8a; }
 .footer-links a:hover {
   text-decoration: underline;
 }
+
+/* Chat ↔ ChatGPT project status strip */
+.bridge-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:6px 12px;font-size:12px;color:#5b6270;border-bottom:1px solid rgba(0,0,0,.06);background:#fafbfc}
+.bridge-dot{width:7px;height:7px;border-radius:50%;background:#c0392b;flex:0 0 auto}
+.bridge-dot.ok{background:#2e9e5b}
+.bridge-account{font-weight:600;color:#2b3038;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bridge-counts{opacity:.85}
+.bridge-link{color:#2563eb;text-decoration:none;border-bottom:1px dotted rgba(37,99,235,.4)}
+.bridge-publish{margin-left:auto;border:1px solid rgba(37,99,235,.35);background:#eff4ff;color:#1d4ed8;border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer}
+.bridge-publish:disabled{opacity:.6;cursor:default}
