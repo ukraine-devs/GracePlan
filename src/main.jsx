@@ -288,6 +288,15 @@ function App() {
   const messagesRef = useRef(null);
 
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) || chats[0], [activeChatId, chats]);
+  // The server list can legitimately hold nothing but placeholder twins, and a
+  // sync then leaves no chats at all. Without a draft every send would crash on
+  // activeChat.id, so the composer must always have a chat to write into.
+  useEffect(() => {
+    if (chats.length) return;
+    const chat = createChat();
+    setChats([chat]);
+    setActiveChatId(chat.id);
+  }, [chats]);
 
   const isSending = sendingIds.has(activeChat?.id);
   const setIsSending = (value) => markSending(activeChat?.id, value);
@@ -434,6 +443,7 @@ function App() {
         && !(chat.gptId && !(chat.messages || []).some((message) => message.role === "user")));
       // The server list is the only list: an untouched draft disappears as soon
       // as the server has conversations to show, so nobody sees an extra tab.
+      if (!clean.length) return [current.find((chat) => !chat.gptId) || createChat()];
       const serverOnes = clean.filter((chat) => chat.gptId);
       if (!serverOnes.length) return clean;
       // A just-created draft must survive the sync, so an empty new chat no
@@ -713,6 +723,7 @@ function App() {
   async function submit(event) {
     event.preventDefault();
     const text = input.trim();
+    if (!activeChat) return;
     if ((!text && !files.length) || isSending || isPreparingFiles) return;
     const submittedFiles = [...files];
     const chatId = activeChat.id;
@@ -928,7 +939,7 @@ function App() {
       <header className="topbar"><div className="brand-row"><div className="brand-text" aria-label="Grace AI Planner">Grace AI Planner</div></div>
         <button className="icon-button chat-manager-button" type="button" onClick={() => setChatManagerOpen(true)} aria-label="All chats" title="All chats"><Menu size={18} /></button>
         <nav className="chat-tabs" aria-label="Chats" ref={tabsRef} onPointerDown={tabDragStart} onPointerMove={tabDragMove} onPointerUp={tabDragEnd} onPointerCancel={tabDragEnd}>{chats.map((chat) => (
-          <div className={chat.id === activeChat.id ? "chat-tab active" : "chat-tab"} key={chat.id} role="tab" aria-selected={chat.id === activeChat.id} tabIndex={0} onClick={() => setActiveChatId(chat.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setActiveChatId(chat.id); } }}>
+          <div className={chat.id === activeChat?.id ? "chat-tab active" : "chat-tab"} key={chat.id} role="tab" aria-selected={chat.id === activeChat?.id} tabIndex={0} onClick={() => setActiveChatId(chat.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setActiveChatId(chat.id); } }}>
             <span className="chat-tab-title">{chat.title}</span>
             <button className="chat-tab-close" type="button" aria-label={"Закрыть вкладку: " + chat.title} onClick={(e) => { e.stopPropagation(); closeChat(chat.id); }}>×</button>
           </div>

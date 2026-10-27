@@ -3,3 +3,4 @@ dist/
 .vercel/
 har.zip
 .DS_Store
+tests/.compiled-*.mjs
