@@ -3,6 +3,7 @@ import http from "node:http";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import WebSocket from "ws";
+import { chromium } from "playwright-core";
 import { execFileSync, execSync } from "node:child_process";
 
 const CDP_HOST = "localhost:9222";
@@ -81,6 +82,26 @@ async function closeTab(session) {
 // chatgpt.com/c/<id> costs a request on an endpoint that throttles hard, so
 // sending a second message must not reload the page.
 const chatTabs = new Map();
+// The relay drives the Chromium on the desktop; Playwright joins that same
+// browser over CDP for the one thing raw CDP cannot do: handing files to
+// React's file input so the composer really shows the attachment chip.
+let desktopBrowser = null;
+async function desktopPageFor(url) {
+  try {
+    if (!desktopBrowser) desktopBrowser = await chromium.connectOverCDP("http://127.0.0.1:9222");
+    const browser = await desktopBrowser;
+    const pages = browser.contexts()[0].pages();
+    const path = String(url || "").split("?")[0];
+    return pages.find((page) => page.url() === url)
+      || pages.find((page) => page.url().split("?")[0] === path)
+      || null;
+  } catch (e) {
+    dbg("playwright connect failed: " + (e.message || e));
+    desktopBrowser = null;
+    return null;
+  }
+}
+
 async function tabForChat(gptId) {
   const hit = chatTabs.get(gptId);
   if (hit) {
@@ -266,13 +287,11 @@ async function uploadFiles(session, paths) {
   // files were skipped with a debug line while the message went out unattached.
   const attachThroughInput = async (p) => {
     try {
-      await session.send("DOM.enable").catch(() => {});
-      const doc = await session.send("DOM.getDocument", { depth: -1, pierce: true });
-      const rootId = doc?.root?.nodeId;
-      if (!rootId) return false;
-      const found = await session.send("DOM.querySelector", { nodeId: rootId, selector: 'input[type="file"]' }).catch(() => null);
-      if (!found?.nodeId) return false;
-      await session.send("DOM.setFileInputFiles", { files: [p], nodeId: found.nodeId });
+      const url = await evaluate(session, "location.href");
+      const page = await desktopPageFor(url);
+      if (!page) { dbg("no desktop page for " + url); return false; }
+      // "Attach files" is the only composer input without an image accept filter.
+      await page.locator('input[type="file"][aria-label="Attach files"]').setInputFiles(p, { timeout: 25000 });
       dbg("attached through file input: " + String(p).split("/").pop());
       return true;
     } catch (e) { dbg("file input attach failed: " + (e.message || e)); return false; }
@@ -847,14 +866,23 @@ async function opSend(body) {
     const rendered = await evaluate(session, `document.querySelectorAll('[data-message-author-role]').length`).catch(() => -1);
     const unreadable = broken || (expected > 0 && rendered === 0);
     if (unreadable) {
-      keepTab = false;
-      session = null;
-      releaseSlot();
-      released = true;
-      const moved = await moveToFreshChat(body, stored, "conversation does not load");
-      if (moved) return moved;
-      dropChatTab(body.gptId);
-      return { ok: false, gptId: body.gptId, error: "ChatGPT не открывает эту беседу; новый чат для неё уже создавался недавно." };
+      // A blank or stuck tab is not a lost conversation: reload the same URL and
+      // look again. The chat is never abandoned in favour of a fresh one; a new
+      // chat only appears when the user asks for it.
+      dbg("conversation did not render, reloading " + body.gptId);
+      await session.send("Page.reload", { ignoreCache: true }).catch(() => {});
+      await sleep(5000);
+      await waitComposer(session, 60000).catch(() => {});
+      const replayed = await evaluate(session, `document.querySelectorAll('[data-message-author-role]').length`).catch(() => 0);
+      if (!replayed) {
+        keepTab = false;
+        session = null;
+        releaseSlot();
+        released = true;
+        dropChatTab(body.gptId);
+        return { ok: false, gptId: body.gptId, error: "ChatGPT не открыл беседу. Обновите вкладку или начните новый чат кнопкой +." };
+      }
+      dbg("conversation recovered after reload: " + body.gptId);
     }
     const paths = await saveUploads(body.files);
     await sendWithFiles(session, paths, body.text);
@@ -867,8 +895,6 @@ async function opSend(body) {
       session = null;
       releaseSlot();
       released = true;
-      const moved = await moveToFreshChat(body, stored, "message did not land");
-      if (moved) return moved;
       dropChatTab(body.gptId);
       return { ok: false, gptId: body.gptId, error: "Сообщение не дошло до ChatGPT. Попробуйте ещё раз через минуту." };
     }

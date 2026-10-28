@@ -863,12 +863,15 @@ function App() {
       const planIndexes = photoObservations.map((item, index) => isPlanObservation(item) ? index : -1).filter((index) => index >= 0);
       const previousProjectMessage = [...messages].reverse().find((message) => message.artifacts?.some((item) => item.kind === "source_plan"));
       const previousArtifacts = previousProjectMessage?.artifacts || [];
-      if (!submittedFiles.length && projectMode) artifacts.push(...previousArtifacts.filter((item) => item.type !== "pdf"));
+      if (!submittedFiles.length && projectMode) artifacts.push(...previousArtifacts.filter((item) => item.type !== "pdf" && item.kind !== "concept_render" && item.name !== "GracePlan_concept_3D.png"));
       const previousProject = submittedFiles.length ? {} : storedJson(previousArtifacts, "GracePlan_project.json", {});
       const previousObservations = submittedFiles.length ? [] : storedJson(previousArtifacts, "GracePlan_image_observations.json", []);
       if (photoObservations.length) artifacts.push(jsonArtifact("GracePlan_image_observations.json", photoObservations));
       let planData = previousArtifacts.find((item) => item.kind === "source_plan")?.data;
-      let renderData = previousArtifacts.find((item) => item.kind === "concept_render" || item.name === "GracePlan_concept_3D.png")?.data;
+      // A proposal PDF may only use a render produced by this run. Reusing the
+      // previous one made the site hand back the same finished file again and
+      // again while nothing was actually generated.
+      let renderData = null;
       let contactSheets = previousArtifacts.filter((item) => item.kind === "contact_sheet").map((item) => item.data);
       let photoCount = submittedFiles.length ? submittedFiles.length - planIndexes.length : previousArtifacts.find((item) => item.kind === "source_plan")?.photoCount || 0;
       let renderQa = submittedFiles.length ? null : storedJson(previousArtifacts, "GracePlan_render_review.json", null);
@@ -939,7 +942,10 @@ function App() {
             onProgress: (label) => stage("pdf", label)
           });
           const number = String(messages.flatMap((message) => message.artifacts || []).filter((item) => item.type === "pdf").length + 1).padStart(3, "0");
-          const filename = "проектное_предложение_" + number + ".pdf";
+          // The name carries the moment of composition, so a fresh file is
+          // recognisable and two runs can never look like the same document.
+          const builtAt = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+          const filename = "проектное_предложение_" + number + "_" + builtAt + ".pdf";
           artifacts.push({ type: "pdf", name: filename, data: pdfUrl });
           stage("pdf", "Final proposal PDF created and validated", "done");
           finalAnswer = "Готово — проєктна пропозиція у PDF нижче. Документ містить 6 A2, тематичні додатки A3, фотоатлас і загальний A4. Геометрія, інженерні прив'язки та відсоток візуальної відповідності потребують перевірки.";
