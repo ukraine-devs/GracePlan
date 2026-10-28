@@ -260,6 +260,23 @@ async function uploadFiles(session, paths) {
     } catch {}
   });
   const thumbCount = () => evaluate(session, `document.querySelectorAll('img[src^="blob:"]').length + document.querySelectorAll('img[src^="data:"]').length`);
+  // Deterministic attach path: hand the file to ChatGPT's own file input through
+  // the DevTools protocol. It needs no X11 clipboard and accepts every type,
+  // PDFs included - the clipboard route only ever handled PNG/JPEG, and non-image
+  // files were skipped with a debug line while the message went out unattached.
+  const attachThroughInput = async (p) => {
+    try {
+      await session.send("DOM.enable").catch(() => {});
+      const doc = await session.send("DOM.getDocument", { depth: -1, pierce: true });
+      const rootId = doc?.root?.nodeId;
+      if (!rootId) return false;
+      const found = await session.send("DOM.querySelector", { nodeId: rootId, selector: 'input[type="file"]' }).catch(() => null);
+      if (!found?.nodeId) return false;
+      await session.send("DOM.setFileInputFiles", { files: [p], nodeId: found.nodeId });
+      dbg("attached through file input: " + String(p).split("/").pop());
+      return true;
+    } catch (e) { dbg("file input attach failed: " + (e.message || e)); return false; }
+  };
   for (let pi = 0; pi < paths.length; pi++) {
     const p = paths[pi];
     if (pi > 0) {
@@ -274,7 +291,25 @@ async function uploadFiles(session, paths) {
       dbg("chips " + (grew ? "grew" : "timeout") + " before " + String(p).split("/").pop());
     }
     const name = String(p).split("/").pop();
-    if (!/\.(png|jpe?g|webp)$/i.test(p)) { dbg("skip non-image " + name); continue; }
+    const thumbsBefore = await thumbCount().catch(() => 0);
+    if (await attachThroughInput(p)) {
+      let seen = false;
+      for (let i = 0; i < 30; i++) {
+        await sleep(700);
+        const state = await evaluate(session, `(() => {
+          const text = document.body.innerText || '';
+          const thumbs = document.querySelectorAll('img[src^="blob:"]').length + document.querySelectorAll('img[src^="data:"]').length;
+          return { byName: text.includes(${JSON.stringify(name.slice(0, 16))}), thumbs };
+        })()`).catch(() => ({ byName: false, thumbs: 0 }));
+        if (state.thumbs > thumbsBefore || state.byName) { seen = true; break; }
+      }
+      if (seen) { dbg("attached " + name); await sleep(800); continue; }
+      dbg("file input produced no chip for " + name + ", trying the clipboard");
+    }
+    if (!/\.(png|jpe?g|webp)$/i.test(p)) {
+      dbg("cannot attach non-image " + name);
+      return false;
+    }
     if (!xclipImage(p)) return false;
     await withTimeout(session.send("Page.bringToFront"), 3000).catch(() => {});
     await evaluate(session, `(() => {
@@ -330,13 +365,15 @@ async function waitIdle(session, timeoutMs = 180000) {
 async function sendWithFiles(session, paths, text) {
   if (!paths.length) { await typeAndSend(session, text); return; }
   const N = paths.length;
+  const label = (p) => String(p).split("/").pop();
+  const partName = (p, index) => `${/\.(png|jpe?g|webp)$/i.test(p) ? "Изображение" : "Файл"} ${index + 1} из ${N}.`;
   for (let i = 0; i < N - 1; i++) {
-    if (!(await uploadFiles(session, [paths[i]]))) throw new Error("file not attached: " + paths[i].split("/").pop());
-    await typeAndSend(session, `Изображение ${i + 1} из ${N}.`);
+    if (!(await uploadFiles(session, [paths[i]]))) throw new Error("Не удалось прикрепить файл в ChatGPT: " + label(paths[i]));
+    await typeAndSend(session, partName(paths[i], i));
     dbg("part " + (i + 1) + "/" + N + " sent");
     await waitIdle(session, 180000);
   }
-  if (!(await uploadFiles(session, [paths[N - 1]]))) throw new Error("file not attached: " + paths[N - 1].split("/").pop());
+  if (!(await uploadFiles(session, [paths[N - 1]]))) throw new Error("Не удалось прикрепить файл в ChatGPT: " + label(paths[N - 1]));
   await typeAndSend(session, text);
   dbg("final sent");
 }

@@ -126,32 +126,39 @@ function readFileAsDataUrl(file) {
     reader.readAsDataURL(file);
   });
 }
-// Vercel rejects a request above 4.5 MB, so one message carrying ten photos is
-// impossible. Files are uploaded one by one and the message only names them.
-const MAX_UPLOAD_CHARS = 3_000_000;
-async function uploadFile(file) {
-  const name = file.relativePath || file.name;
-  const type = file.type || "application/octet-stream";
-  let data = await readFileAsDataUrl(file);
-  if (data.length > MAX_UPLOAD_CHARS) {
-    if (!/^image\//.test(type)) throw new Error("Файл больше 2 МБ, его нельзя отправить одним куском: " + name);
-    data = (await prepareImage(file)).data;
+// Attachments travel inside the message request: the relay writes them to its
+// upload directory and pushes them through the ChatGPT attach dialog. A separate
+// "upload" call does not exist on the relay, so staging first silently failed
+// for every file, PDFs included. Vercel refuses a function body above 4.5 MB,
+// which is the only real limit left.
+const MAX_REQUEST_CHARS = 3_500_000;
+async function attachmentPayload(files) {
+  const payload = [];
+  let total = 0;
+  for (const file of files || []) {
+    const name = file.relativePath || file.name || "file";
+    const type = file.type || "application/octet-stream";
+    let data;
+    try {
+      data = /^image\//.test(type) ? (await prepareImage(file)).data : await readFileAsDataUrl(file);
+    } catch (error) {
+      throw new Error("Не удалось прочитать файл " + name + ": " + (error.message || error));
+    }
+    if (!data || data.length < 24) throw new Error("Файл пустой или недоступен: " + name);
+    total += data.length;
+    if (total > MAX_REQUEST_CHARS) {
+      const mb = (data.length / 1_370_000).toFixed(1);
+      throw new Error(name + " (" + mb + " МБ) не проходит в одном сообщении: предел около 2,5 МБ на отправку. Сожмите PDF или пришлите его страницами.");
+    }
+    payload.push({ name, mime: type, data });
   }
-  const stored = await bridgeFetch("upload", { name, mime: type, data }, 180000);
-  return stored?.name || name;
+  return payload;
 }
-async function uploadAll(files) {
-  const names = [];
-  for (const file of files || []) names.push(await uploadFile(file));
-  return names;
+async function bridgeNewChat(siteChatId, title, text, attachmentFiles) {
+  return bridgeFetch("new", { siteChatId, title, text, files: attachmentFiles });
 }
-async function bridgeNewChat(siteChatId, title, text, files) {
-  const fileNames = await uploadAll(files);
-  return bridgeFetch("new", { siteChatId, title, text, fileNames });
-}
-async function bridgeSend(gptId, text, files) {
-  const fileNames = await uploadAll(files);
-  return bridgeFetch("send", { gptId, text, fileNames });
+async function bridgeSend(gptId, text, attachmentFiles) {
+  return bridgeFetch("send", { gptId, text, files: attachmentFiles });
 }
 async function bridgeState() {
   try { return await bridgeFetch("state", null, 15000); } catch { return null; }
@@ -739,6 +746,25 @@ function App() {
     setProgressPreviews([]); setRunLog([]);
     const actualExecution = createExecutionLog(setRunLog);
     const stage = actualExecution.stage;
+    // Attachments are shown on the sent message itself. Without this the bridge
+    // path dropped them from the transcript, so a PDF could not be downloaded
+    // back even though it had just been sent.
+    let bridgeFiles = [];
+    if (submittedFiles.length) {
+      try {
+        bridgeFiles = await attachmentPayload(submittedFiles);
+        const artifacts = bridgeFiles.map((item) => ({ type: /^image\//.test(item.mime) ? "image" : "file", name: item.name, data: item.data }));
+        const savedArtifacts = await persistArtifacts(userId, artifacts);
+        nextMessages[nextMessages.length - 1].artifacts = savedArtifacts;
+        writeChat((chat) => ({ ...chat, messages: [...nextMessages] }));
+      } catch (attachmentError) {
+        setError(attachmentError.message || String(attachmentError));
+        writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось приложить файл: " + attachmentError.message }] }));
+        markSending(chatId, false);
+        setCurrentStep(-1);
+        return;
+      }
+    }
     // Every chat runs on the server-side ChatGPT channel, so the site does not
     // depend on OpenAI API credits. The twin chat is created on the first message.
     {
@@ -748,7 +774,7 @@ function App() {
         setCurrentStep(4);
         if (gptId) {
           stage("bridge", "Отправка в ChatGPT (сервер)");
-          result = await bridgeSend(gptId, text, submittedFiles);
+          result = await bridgeSend(gptId, text, bridgeFiles);
           if (result.gptId && result.gptId !== gptId) {
             // The old conversation was unusable; the bridge continued in a new one.
             gptId = result.gptId;
@@ -756,7 +782,7 @@ function App() {
           }
         } else {
           stage("bridge", "Создаю чат в Grace Planner (ChatGPT)");
-          result = await bridgeNewChat(chatId, activeChat.title, text || "Please review the attached files.", submittedFiles);
+          result = await bridgeNewChat(chatId, activeChat.title, text || "Please review the attached files.", bridgeFiles);
           gptId = result.gptId;
           writeChat((chat) => ({ ...chat, gptId: gptId, gptUrl: result.url, updatedAt: Date.now() }));
         }
@@ -786,7 +812,9 @@ function App() {
         const file = submittedFiles[index];
         setCurrentStep(0); stage("read-" + index, "Reading " + file.name);
         if (!/^image\//.test(file.type || "") && !/\.(png|jpe?g|webp)$/i.test(file.name || "")) {
-          userArtifacts.push({ type: "file", name: file.relativePath || file.name });
+          // Keep the bytes, not just the name: without data the message showed
+          // "файл недоступний" and a PDF could never be downloaded back.
+          userArtifacts.push({ type: "file", name: file.relativePath || file.name, data: await readFileAsDataUrl(file) });
           stage("read-" + index, "Attached " + file.name, "done");
           continue;
         }
