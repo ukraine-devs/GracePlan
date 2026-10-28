@@ -797,8 +797,24 @@ function App() {
         setChats((current) => current.map((item) => item.id === chatId ? { ...item, gptMessages: twin?.messages || result.messages } : item));
         if (pending) stage("bridge", "Ответ появится в течение минуты", "done");
       } catch (bridgeError) {
-        setError("Мост ChatGPT: " + bridgeError.message);
-        writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось получить ответ ChatGPT: " + bridgeError.message }] }));
+        // The desktop browser can be blocked (Cloudflare, expired login). The site
+        // must still answer, so the same message goes to the server API and the
+        // user gets a reply instead of a dead end.
+        stage("bridge", "Мост недоступен, отвечаю через OpenAI API", "failed");
+        let direct = null;
+        try {
+          direct = await requestJson("/api/chat", {
+            messages: nextMessages.map(({ role, content }) => ({ role, content })),
+            files: [], photoObservations: [], previousMode: activeChat.lastMode || "general", clientPipeline: false
+          });
+        } catch (apiError) {
+          setError("Мост ChatGPT: " + bridgeError.message);
+          writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось получить ответ: мост ChatGPT недоступен (" + bridgeError.message + "), резервный API тоже не ответил (" + apiError.message + ")." }] }));
+          return;
+        }
+        const answer = String(direct?.answer || "").trim();
+        writeChat((chat) => ({ ...chat, lastMode: activeChat.lastMode || "general", messages: [...nextMessages, { id: messageId, role: "assistant", content: answer || "Пустой ответ API.", mode: "general" }] }));
+        if (answer) { setError(""); stage("bridge", "Ответ получен через OpenAI API", "done"); }
       } finally {
         setCurrentStep(-1); markSending(chatId, false); setProgressPreviews([]);
       }
