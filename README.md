@@ -1,6 +1,8 @@
 # Grace Planner
 
-API-backed Grace Plan chat for visitors without requiring a ChatGPT account.
+The site talks to ChatGPT only through the private bridge that drives the
+Chromium on the OCI desktop (VNC). No model API key is used anywhere: there is
+no `/api/chat`, `/api/analyze-image` or `/api/render-concept` in the project.
 
 ## Local
 
@@ -11,22 +13,15 @@ npm run dev
 
 ## Vercel
 
-The project builds with:
+* `/api/bridge` is a thin proxy to the relay on the desktop (`GRACE_RELAY_URL`,
+  default `http://129.159.218.87:8899`). It forwards `new`, `send`, `render`,
+  `publish`, `sync`, `list`, `drop`, `delete`, `read`, `rename`.
+* Everything else (analysis of the plan, the concept render, the PDF) happens in
+  the browser: the relay puts the message into the ChatGPT conversation and the
+  site reads the answer and the generated picture back.
 
-```bash
-npm run build
-```
+## Relay (desktop)
 
-Required environment variable:
-
-```bash
-OPENAI_API_KEY=...
-```
-
-Optional model override:
-
-```bash
-OPENAI_MODEL=gpt-4.1-mini
-```
-
-Deployment trigger: 2026-10-14 10:14 UTC.
+`bridge/agent.js` runs on the OCI box as `grace-bridge.service`, next to
+`chromium-vnc.service`. It reads and writes the real ChatGPT page, so the reply
+and the generated image come from the account, not from an API.
