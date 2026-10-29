@@ -765,9 +765,13 @@ function App() {
         return;
       }
     }
+    // A request that arrives with a plan or photos is a proposal: it has to go
+    // through analysis, render and PDF, not only through chat. Everything else
+    // stays in the ChatGPT conversation.
+    const runProposalPipeline = decision.mode === "grace" && submittedFiles.length > 0;
     // Every chat runs on the server-side ChatGPT channel, so the site does not
     // depend on OpenAI API credits. The twin chat is created on the first message.
-    {
+    if (!runProposalPipeline) {
       try {
         let gptId = activeChat.gptId;
         let result;
