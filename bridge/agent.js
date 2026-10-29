@@ -138,7 +138,10 @@ async function sweepTabs() {
     const pages = (await cdpList()).filter((t) => t.type === "page" && /^https:\/\/chatgpt\.com\//.test(t.url || ""));
     const live = new Set(pages.map((page) => page.id));
     for (const id of [...openedTabs]) if (!live.has(id)) openedTabs.delete(id);
+    // A conversation tab is the only way back into a chat: ChatGPT answers 404
+    // when an old conversation is opened again, so tabs of live chats stay.
     const keep = new Set([...(reader?.targetId ? [reader.targetId] : []), ...openedTabs]);
+    for (const tab of chatTabs.values()) if (tab?.targetId) keep.add(tab.targetId);
     let keptProject = pages.some((page) => keep.has(page.id) && /\/project\b/.test(page.url || ""));
     const toClose = [];
     for (const page of pages) {
@@ -537,7 +540,7 @@ const readConversation = async (session, gptId) => {
     for (const m of nodes) {
       const role = m.author?.role;
       if (role !== 'user' && role !== 'assistant') continue;
-      const text = (m.content?.parts || []).filter(p => typeof p === 'string').join(String.fromCharCode(10)).trim();
+      const text = (m.content?.parts || []).map((p) => typeof p === 'string' ? p : (p && typeof p === 'object' && typeof p.text === 'string' ? p.text : '')).join(String.fromCharCode(10)).trim();
       if (!text) continue;
       const prev = out[out.length - 1];
       if (prev && prev.role === role && prev.content === text) continue;
@@ -552,13 +555,26 @@ const readConversation = async (session, gptId) => {
 // Read the conversation straight from the rendered page: no backend endpoint,
 // so it cannot be rate limited the way the history API is.
 const domMessagesExpr = `(() => {
-  const nodes = [...document.querySelectorAll('[data-message-author-role]')];
   const out = [];
-  for (const node of nodes) {
+  const legacy = [...document.querySelectorAll('[data-message-author-role]')];
+  for (const node of legacy) {
     const role = node.getAttribute('data-message-author-role');
     if (role !== 'user' && role !== 'assistant') continue;
-    const body = node.querySelector('.markdown') || node;
-    const text = (body.innerText || '').trim();
+    const text = ((node.querySelector('.markdown') || node).innerText || '').trim();
+    if (text) out.push({ role, content: text });
+  }
+  if (out.length) return out;
+  // Current UI: one [data-content-search-unit-key] per turn, keyed
+  // "fallback-turn-<n>:<idx>:<role>".
+  const turns = [...document.querySelectorAll('[data-content-search-unit-key]')];
+  const seenIds = new Set();
+  for (const node of turns) {
+    const key = node.getAttribute('data-content-search-unit-key') || '';
+    const holder = node.closest('[data-chatgpt-selection-message-id]');
+    const messageId = holder && holder.getAttribute('data-chatgpt-selection-message-id');
+    if (messageId) { if (seenIds.has(messageId)) continue; seenIds.add(messageId); }
+    const role = /:assistant$/i.test(key) ? 'assistant' : /:user$/i.test(key) ? 'user' : 'assistant';
+    const text = (node.innerText || '').replace(/^ChatGPT(?:\\s+said:)?\\s*/i, '').trim();
     if (text) out.push({ role, content: text });
   }
   return out;
@@ -588,6 +604,25 @@ const chatIdExpr = `(() => { const m = location.href.match(/\\/c\\/([0-9a-f-]{20
 // A tab needs a name a person can recognise: when the title is still the
 // default one, it is taken from the first thing the user wrote.
 const GENERIC_TITLES = new Set(["", "New chat", "Grace Planner chat", "Новый чат"]);
+function tidyMessages(list) {
+  const stripped = [];
+  for (const item of list || []) {
+    const role = item?.role === "user" ? "user" : "assistant";
+    const content = String(item?.content || "").replace(/^ChatGPT(?:\s+said:)?\s*/i, "").trim();
+    if (!content) continue;
+    stripped.push({ role, content });
+  }
+  // The page renders each turn twice (visible copy + hidden mirror), so the same
+  // text arrives twice. Keep one entry per role+text, in first-seen order.
+  const unique = new Map();
+  for (const item of stripped) {
+    const key = item.role + "|" + item.content;
+    if (unique.has(key)) continue;
+    unique.set(key, item);
+  }
+  return [...unique.values()];
+}
+
 function applyDerivedTitle(chat) {
   if (!chat) return;
   const current = String(chat.title || "").trim();
@@ -863,26 +898,28 @@ async function opSend(body) {
     // A conversation that cannot render cannot accept a message either, and the
     // account-wide throttling looks exactly like that. Such a chat is moved to a
     // fresh one instead of leaving the user without an answer.
-    const rendered = await evaluate(session, `document.querySelectorAll('[data-message-author-role]').length`).catch(() => -1);
+    const rendered = await evaluate(session, `document.querySelectorAll('[data-message-author-role],[data-content-search-unit-key]').length`).catch(() => -1);
     const unreadable = broken || (expected > 0 && rendered === 0);
     if (unreadable) {
-      // A blank or stuck tab is not a lost conversation: reload the same URL and
-      // look again. The chat is never abandoned in favour of a fresh one; a new
-      // chat only appears when the user asks for it.
-      dbg("conversation did not render, reloading " + body.gptId);
+      // The conversation endpoint answers 200 once and then 429: ChatGPT is
+      // throttling history loads for this account, so throwing reloads at it only
+      // extends the block. Reload once, give it time, and report honestly.
+      dbg("conversation did not render: " + body.gptId + " (history likely rate limited)");
+      await sleep(20000);
       await session.send("Page.reload", { ignoreCache: true }).catch(() => {});
-      await sleep(5000);
-      await waitComposer(session, 60000).catch(() => {});
-      const replayed = await evaluate(session, `document.querySelectorAll('[data-message-author-role]').length`).catch(() => 0);
-      if (!replayed) {
+      await sleep(15000);
+      await waitComposer(session, 45000).catch(() => {});
+      const msgs = await evaluate(session, `document.querySelectorAll('[data-message-author-role],[data-content-search-unit-key]').length`).catch(() => 0);
+      const composer = await evaluate(session, `!!document.querySelector('#prompt-textarea, div[contenteditable="true"]')`).catch(() => false);
+      dbg("after single reload: msgs=" + msgs + " composer=" + composer);
+      if (!msgs && !composer) {
         keepTab = false;
         session = null;
         releaseSlot();
         released = true;
         dropChatTab(body.gptId);
-        return { ok: false, gptId: body.gptId, error: "ChatGPT не открыл беседу. Обновите вкладку или начните новый чат кнопкой +." };
+        return { ok: false, gptId: body.gptId, error: "ChatGPT временно ограничил загрузку этой беседы (429). Подождите несколько минут и повторите — беседа не потеряна." };
       }
-      dbg("conversation recovered after reload: " + body.gptId);
     }
     const paths = await saveUploads(body.files);
     await sendWithFiles(session, paths, body.text);
@@ -906,7 +943,16 @@ async function opSend(body) {
       if (/did not reach/.test(verifyError.message)) throw verifyError;
     }
     const chat = state.chats.find((c) => c.gptId === body.gptId);
-    if (chat) { chat.messages = [...(chat.messages || []), { role: "user", content: body.text }]; chat.updatedAt = Date.now(); chat.readTries = 0; save(); }
+    if (chat) {
+      // The page already holds the whole conversation after sending, so the
+      // transcript is replaced by what the DOM shows. Appending here was what
+      // duplicated the history on every message.
+      const domNow = await evaluate(session, domMessagesExpr).catch(() => null);
+      chat.messages = Array.isArray(domNow) && domNow.length
+        ? tidyMessages(domNow)
+        : tidyMessages([...(chat.messages || []), { role: "user", content: body.text }]);
+      chat.updatedAt = Date.now(); chat.readTries = 0; save();
+    }
     watchForReply(body.gptId);
     return { ok: true, gptId: body.gptId, pending: true, reply: "", messages: chat?.messages || [] };
   } finally { if (session && !keepTab) await closeTab(session); if (!released) releaseSlot(); }
@@ -999,6 +1045,12 @@ async function reconcileFromProject(session, body = {}) {
       if (msgs && msgs.length) chat.messages = msgs;
       fetched += 1;
     } catch (error) { dbg("transcript for " + chat.gptId + " pending: " + String(error.message || error).slice(0, 60)); }
+  }
+  if (!next.length && state.chats.length) {
+    dbg("empty mirror ignored; keeping " + state.chats.length + " chats");
+    state.syncedAt = Date.now();
+    save();
+    return { ok: true, chats: state.chats, cached: true };
   }
   state.chats = next;
   delete state.tombstones;
@@ -1125,7 +1177,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && url.pathname === "/health") return json(res, 200, { ok: true, chats: state.chats.length });
     if (req.method === "GET" && url.pathname === "/project") return json(res, 200, { ok: true, online: true, account: "inna.kuvardina93@gmail.com", projectUrl: PROJECT_URL, source: "chatgpt", syncedAt: state.syncedAt || 0, projectChats: state.chats.map((c) => ({ gptId: c.gptId, title: c.title, siteChatId: c.siteChatId })) });
-    if (req.method === "GET" && url.pathname === "/state") return json(res, 200, state);
+    if (req.method === "GET" && url.pathname === "/state") return json(res, 200, { ...state, chats: (state.chats || []).map((chat) => ({ ...chat, messages: tidyMessages(chat.messages) })) });
     const body = req.method === "POST" ? JSON.parse((await readBody(req)) || "{}") : {};
     if (req.method === "POST" && url.pathname === "/chat/new") return json(res, 200, await opNewChat(body));
     if (req.method === "POST" && url.pathname === "/chat/read") return json(res, 200, await opRead(body));
