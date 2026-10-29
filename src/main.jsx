@@ -812,9 +812,12 @@ function App() {
         const gptState = await bridgeState().catch(() => null);
         const twin = gptState?.chats?.find((c) => c.gptId === gptId);
         const pending = !String(result.reply || "").trim();
-        writeChat((chat) => pending
+        const chatImage = typeof result.image === "string" && result.image.startsWith("data:image/")
+          ? [{ type: "image", name: "GracePlan_chat_" + Date.now() + ".png", data: result.image }]
+          : [];
+        writeChat((chat) => pending && !chatImage.length
           ? { ...chat, gptId: gptId, updatedAt: Date.now(), messages: nextMessages }
-          : { ...chat, gptId: gptId, updatedAt: Date.now(), messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply, mode: "general", synced: true }] });
+          : { ...chat, gptId: gptId, updatedAt: Date.now(), messages: [...nextMessages, { id: replyId, role: "assistant", content: result.reply || "Изображение из ChatGPT", mode: "general", synced: true, artifacts: chatImage }] });
         setChats((current) => current.map((item) => item.id === chatId ? { ...item, gptMessages: twin?.messages || result.messages } : item));
         if (pending) stage("bridge", "Ответ появится в течение минуты", "done");
       } catch (bridgeError) {
