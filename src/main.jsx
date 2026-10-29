@@ -88,7 +88,9 @@ function createChat() { return { id: crypto.randomUUID(), title: "New chat", mes
 function bridgeFetch(action, payload, timeoutMs = 300000) {
   const isRead = action === "state" || action === "health";
   const cacheBust = action === "state" ? "&t=" + Date.now() : "";
-  return fetch("/api/bridge?action=" + action + cacheBust, {
+  // One tunnel to the VNC relay. It is not a model API: the browser on the
+  // desktop does the work, this only carries its messages.
+  return fetch("/relay?action=" + action + cacheBust, {
     method: isRead ? "GET" : "POST",
     headers: isRead ? undefined : { "Content-Type": "application/json" },
     body: isRead ? undefined : JSON.stringify(payload),
