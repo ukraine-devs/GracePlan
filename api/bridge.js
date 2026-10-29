@@ -42,6 +42,14 @@ export default async function handler(req, res) {
       return res.status(upstream.status).send(text);
     } catch (error) { return res.status(502).json({ error: "Bridge relay unreachable: " + (error.message || error) }); }
   }
+  if (req.method === "GET" && req.query.action === "render") {
+    try {
+      const upstream = await relayFetch(RELAY + "/render?id=" + encodeURIComponent(String(req.query.id || "")), { signal: AbortSignal.timeout(20000) });
+      const text = await upstream.text();
+      res.setHeader("Content-Type", "application/json");
+      return res.status(upstream.status).send(text);
+    } catch (error) { return res.status(502).json({ error: "Bridge relay unreachable: " + (error.message || error) }); }
+  }
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   let chunks = []; let size = 0;

@@ -165,6 +165,21 @@ async function bridgeSend(gptId, text, attachmentFiles) {
 async function bridgeState() {
   try { return await bridgeFetch("state", null, 15000); } catch { return null; }
 }
+
+// A render takes minutes, so the relay starts a job and the site polls it through
+// the same tunnel. Nothing here talks to a model API.
+async function bridgeRenderImage(gptId, text) {
+  const started = await bridgeFetch("render", { gptId, text }, 60000);
+  const id = started?.id;
+  if (!id) throw new Error("Рендер не запустился");
+  for (let attempt = 0; attempt < 72; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    const res = await fetch("/relay?action=render&id=" + encodeURIComponent(id), { cache: "no-store" }).then((r) => r.json()).catch(() => null);
+    if (res?.status === "done" && res.image) return res.image;
+    if (res?.status === "error") throw new Error(res.error || "Рендер не удался");
+  }
+  throw new Error("Рендер не завершился за 6 минут");
+}
 function normalizeMessages(messages) {
   return (Array.isArray(messages) ? messages : []).filter((message) => message.content !== "Команда уже показана. Ожидаю новые данные.");
 }
@@ -906,8 +921,8 @@ function App() {
         try {
           const currentPlan = preparedImages[planIndexes[0]];
           const plan = currentPlan?.data || (await prepareImage(new File([await (await fetch(planData)).blob()], "saved-source-plan.png", { type: planData.slice(5, planData.indexOf(";")) }))).data;
-          const rendered = await bridgeFetch("render", { gptId: activeChat.gptId, text: "Сгенерируй одну 3D-візуалізацію приміщення за прикріпленим планом і фото. Тільки зображення." }, 420000);
-          renderData = rendered.image;
+          const renderedImage = await bridgeRenderImage(activeChat.gptId, "Сгенерируй одну 3D-візуалізацію приміщення за прикріпленим планом і фото. Тільки зображення.");
+          renderData = renderedImage;
           artifacts.push({ type: "image", kind: "concept_render", name: "GracePlan_concept_3D.png", data: renderData });
           setProgressPreviews([{ source: renderData, name: "Generated concept - awaiting review" }]);
           stage("render", "Conceptual render created", "done");
