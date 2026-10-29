@@ -51,7 +51,7 @@ export default async function handler(req, res) {
   const action = (req.query.action || req.url.split("/").pop() || "").toString();
   // Every action the relay implements must pass through, otherwise the site
   // silently loses deletes and transcript reads (a 400 nobody sees).
-  const endpoint = ["new", "send", "publish", "sync", "list", "drop", "delete", "read", "rename"].includes(action) ? "/chat/" + action : null;
+  const endpoint = ["new", "send", "publish", "sync", "list", "drop", "delete", "read", "rename", "render"].includes(action) ? "/chat/" + action : null;
   if (!endpoint) return res.status(400).json({ error: "Unknown action: " + action });
 
   try {

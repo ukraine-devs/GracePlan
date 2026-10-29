@@ -801,24 +801,8 @@ function App() {
         setChats((current) => current.map((item) => item.id === chatId ? { ...item, gptMessages: twin?.messages || result.messages } : item));
         if (pending) stage("bridge", "Ответ появится в течение минуты", "done");
       } catch (bridgeError) {
-        // The desktop browser can be blocked (Cloudflare, expired login). The site
-        // must still answer, so the same message goes to the server API and the
-        // user gets a reply instead of a dead end.
-        stage("bridge", "Мост недоступен, отвечаю через OpenAI API", "failed");
-        let direct = null;
-        try {
-          direct = await requestJson("/api/chat", {
-            messages: nextMessages.map(({ role, content }) => ({ role, content })),
-            files: [], photoObservations: [], previousMode: activeChat.lastMode || "general", clientPipeline: false
-          });
-        } catch (apiError) {
-          setError("Мост ChatGPT: " + bridgeError.message);
-          writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось получить ответ: мост ChatGPT недоступен (" + bridgeError.message + "), резервный API тоже не ответил (" + apiError.message + ")." }] }));
-          return;
-        }
-        const answer = String(direct?.answer || "").trim();
-        writeChat((chat) => ({ ...chat, lastMode: activeChat.lastMode || "general", messages: [...nextMessages, { id: messageId, role: "assistant", content: answer || "Пустой ответ API.", mode: "general" }] }));
-        if (answer) { setError(""); stage("bridge", "Ответ получен через OpenAI API", "done"); }
+        setError("Мост ChatGPT: " + bridgeError.message);
+        writeChat((chat) => ({ ...chat, messages: [...nextMessages, { id: messageId, role: "assistant", content: "Не удалось получить ответ: " + bridgeError.message }] }));
       } finally {
         setCurrentStep(-1); markSending(chatId, false); setProgressPreviews([]);
       }
@@ -853,8 +837,10 @@ function App() {
         const file = submittedFiles[index];
         const prepared = preparedImages[index];
         setCurrentStep(1); stage("analysis-" + index, "Analyzing " + file.name);
-        const analysis = await requestJson("/api/analyze-image", prepared);
-        photoObservations.push({ ...analysis, source_path: file.relativePath || file.name });
+        // No model API is used: the plan is the drawing by name, the rest are
+        // room photos. The render itself is produced in the ChatGPT browser.
+        const isPlan = /plan|план|blueprint|2d/i.test(file.name || "");
+        photoObservations.push({ name: file.name, source_path: file.relativePath || file.name, observations: { kind: isPlan ? "2d plan" : "interior" } });
         stage("analysis-" + index, "Analyzed " + file.name, "done");
         setPhotoProgress((index + 1) + "/" + submittedFiles.length);
       }
@@ -862,17 +848,8 @@ function App() {
       setGraceSession(decision.mode === "grace");
       setCurrentStep(4);
       stage("reply", decision.mode === "grace" ? "Preparing Grace proposal data" : "Preparing reply");
-      let data;
-      try {
-        data = await requestJson("/api/chat", {
-          messages: nextMessages.map(({ role, content }) => ({ role, content })), files: [],
-          photoObservations, previousMode: activeChat.lastMode || "general", clientPipeline: true
-        });
-      } catch (chatError) {
-        if (decision.mode !== "grace" || (!submittedFiles.length && !activeChat.messages.some((message) => message.artifacts?.some((artifact) => artifact.kind === "source_plan")))) throw chatError;
-        data = { answer: "", mode: "grace", artifacts: [], execution: [] };
-        stage("reply", "Text reply unavailable; continuing the proposal from source images", "failed");
-      }
+      let data = { answer: "", mode: "grace", artifacts: [], execution: [] };
+      stage("reply", "Пропозиція збирається з файлів", "done");
       if (data.answer) stage("reply", "Reply received", "done");
       const projectMode = data.mode === "grace";
       setGraceSession(projectMode);
@@ -927,17 +904,16 @@ function App() {
         try {
           const currentPlan = preparedImages[planIndexes[0]];
           const plan = currentPlan?.data || (await prepareImage(new File([await (await fetch(planData)).blob()], "saved-source-plan.png", { type: planData.slice(5, planData.indexOf(";")) }))).data;
-          const result = await requestJson("/api/render-concept", { plan, contactSheets, photoCount, request: text });
-          renderData = result.artifact.data;
-          artifacts.push({ ...result.artifact, kind: "concept_render" });
+          const rendered = await bridgeFetch("render", { gptId: activeChat.gptId, text: "Сгенерируй одну 3D-візуалізацію приміщення за прикріпленим планом і фото. Тільки зображення." }, 420000);
+          renderData = rendered.image;
+          artifacts.push({ type: "image", kind: "concept_render", name: "GracePlan_concept_3D.png", data: renderData });
           setProgressPreviews([{ source: renderData, name: "Generated concept - awaiting review" }]);
           stage("render", "Conceptual render created", "done");
           stage("render-qa", "Comparing render against source plan");
           try {
-            const qa = await requestJson("/api/verify-render", { plan, render: renderData });
-            renderQa = qa;
-            artifacts.push(jsonArtifact("GracePlan_render_review.json", qa));
-            stage("render-qa", qa.status === "mismatch_detected" ? "Differences detected - review required" : "Visual comparison complete - manual review required", "done");
+            renderQa = { status: "review_unavailable", error: "Сверка рендера с планом в браузере не виконується", guaranteed: false };
+            artifacts.push(jsonArtifact("GracePlan_render_review.json", renderQa));
+            stage("render-qa", "Порівняння недоступне; рендер не перевірений", "failed");
           } catch (qaError) {
             renderQa = { status: "review_unavailable", error: qaError.message, guaranteed: false };
             artifacts.push(jsonArtifact("GracePlan_render_review.json", renderQa));
